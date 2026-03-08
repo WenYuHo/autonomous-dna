@@ -1,0 +1,101 @@
+"""
+tools/session_start.py
+Rehydrates agent context from TASK_QUEUE.md and MEMORY.md.
+Run at the start of every session and whenever context seems degraded.
+
+Output is designed to be read by the agent — structured for LLM consumption.
+"""
+
+from pathlib import Path
+from datetime import datetime, timezone
+
+
+def load_section(path: Path, heading: str) -> list[str]:
+    """Extract lines under a markdown heading."""
+    lines = path.read_text().splitlines()
+    in_section = False
+    result = []
+    for line in lines:
+        if line.startswith(f"## {heading}"):
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if in_section and line.strip():
+            result.append(line)
+    return result
+
+
+def main() -> None:
+    root = Path.cwd()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    print("=" * 60)
+    print(f"SESSION START — {now}")
+    print("=" * 60)
+
+    # --- Platform ---
+    platform_file = root / "platform" / "ACTIVE"
+    platform = platform_file.read_text().strip() if platform_file.exists() else "UNKNOWN"
+    print(f"\nPLATFORM: {platform}")
+
+    # --- In Progress Tasks ---
+    tq_path = root / "agent" / "TASK_QUEUE.md"
+    if tq_path.exists():
+        in_progress = load_section(tq_path, "IN PROGRESS")
+        print("\n--- IN PROGRESS ---")
+        if in_progress:
+            for line in in_progress:
+                print(line)
+        else:
+            print("(none)")
+
+        backlog = load_section(tq_path, "BACKLOG")
+        available = [l for l in backlog if "Reserved: NONE" in l or l.strip().startswith("- [ ]")]
+        print(f"\n--- BACKLOG: {len(available)} available task(s) ---")
+        for line in available[:5]:
+            print(line)
+        if len(available) > 5:
+            print(f"  ... and {len(available) - 5} more. Read agent/TASK_QUEUE.md for full list.")
+    else:
+        print("\nWARN: agent/TASK_QUEUE.md not found. Run bridge.py to initialise.")
+
+    # --- Memory snapshot ---
+    mem_path = root / "agent" / "MEMORY.md"
+    if mem_path.exists():
+        lines = mem_path.read_text().splitlines()
+        total = len([l for l in lines if l.strip() and not l.startswith("#")])
+        print(f"\n--- MEMORY ({total} facts, limit 150) ---")
+        # Show most recent 20 facts
+        facts = [l for l in lines if l.strip().startswith("- [")]
+        for fact in facts[-20:]:
+            print(fact)
+        if total > 20:
+            print(f"  ... {total - 20} older facts omitted. Read agent/MEMORY.md for full history.")
+    else:
+        print("\nWARN: agent/MEMORY.md not found. Run bridge.py to initialise.")
+
+    # --- Skill index reminder ---
+    print("\n--- SKILL INDEX (load on demand only) ---")
+    skills = {
+        "git work (commit/PR/merge)": "skills/git/SKILL.md",
+        "state sync (task/memory)":   "skills/sync/SKILL.md",
+        "research (library/API)":     "skills/research/SKILL.md",
+        "conflict resolution":        "skills/conflict/SKILL.md",
+        "context management":         "skills/context/SKILL.md",
+    }
+    for label, path in skills.items():
+        exists = "✓" if (root / path).exists() else "✗ MISSING"
+        print(f"  {exists}  {label:35s} → {path}")
+
+    print("\n--- HARD RULES REMINDER ---")
+    print("NEVER edit scaffold files. NEVER mark done if tests fail.")
+    print("NEVER force-push to main/master/develop.")
+    print("IF context degraded → re-run this script.")
+    print("=" * 60)
+    print("Ready. Pick the highest-priority unreserved task and begin.")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

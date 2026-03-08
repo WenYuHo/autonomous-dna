@@ -1,0 +1,20 @@
+{
+  "_comment": "MCP servers. Committed for team sharing. Always pin exact versions — never 'latest'.",
+
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-github@1.2.1"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory@0.6.3"],
+      "_comment": "Cross-session memory. Complements agent/MEMORY.md."
+    }
+  }
+}
