@@ -162,11 +162,23 @@ def build_cycle_tasks(
     return [cycle_task, research_task, improve_task, eval_task]
 
 
+def _artifact_already_used(tasks: list[dict], artifact_path: Path) -> bool:
+    ref = str(artifact_path)
+    for task in tasks:
+        if task.get("ref") != ref:
+            continue
+        title = task.get("title", "")
+        if "AUTOGEN" in title.upper() and title.strip().upper().startswith("CYCLE"):
+            return True
+    return False
+
+
 def run_taskgen(
     queue_path: Path,
     artifact_path: Optional[Path],
     if_empty: bool,
     dry_run: bool,
+    allow_repeat: bool = False,
 ) -> Tuple[bool, int]:
     db = load_queue(queue_path)
     tasks = db.get("tasks", [])
@@ -175,6 +187,10 @@ def run_taskgen(
         return False, 0
 
     artifact = artifact_path or find_latest_artifact(DEFAULT_ARTIFACT_DIR)
+    if artifact is None:
+        return False, 0
+    if not allow_repeat and _artifact_already_used(tasks, artifact):
+        return False, 0
     cycle_number = max_cycle_number(tasks) + 1
     start_id = max_task_id(tasks) + 1
     new_tasks = build_cycle_tasks(start_id, cycle_number, artifact)
@@ -204,15 +220,29 @@ def main() -> None:
         action="store_true",
         help="Only generate tasks when no actionable pending tasks exist",
     )
+    parser.add_argument(
+        "--allow-repeat",
+        action="store_true",
+        help="Allow generating tasks from the same artifact more than once",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print what would happen without writing")
 
     args = parser.parse_args()
     queue_path = Path(args.queue)
     artifact_path = Path(args.artifact) if args.artifact else None
 
-    created, count = run_taskgen(queue_path, artifact_path, args.if_empty, args.dry_run)
+    created, count = run_taskgen(
+        queue_path=queue_path,
+        artifact_path=artifact_path,
+        if_empty=args.if_empty,
+        dry_run=args.dry_run,
+        allow_repeat=args.allow_repeat,
+    )
     if not created:
-        print("Actionable tasks already exist. Skipping task generation.")
+        if not find_latest_artifact(DEFAULT_ARTIFACT_DIR):
+            print("No research artifact found. Skipping task generation.")
+        else:
+            print("Task generation skipped.")
         return
     if args.dry_run:
         print(f"[DRY RUN] Would add {count} task(s) to {queue_path}")

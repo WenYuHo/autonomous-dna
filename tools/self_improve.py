@@ -334,66 +334,86 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous DNA Dogfooding Orchestrator")
     parser.add_argument("--dry-run", action="store_true", help="Print what would happen without spawning swarm")
     parser.add_argument("--base-branch", default=None, help="Base branch to create self-improve branches from")
+    parser.add_argument("--loop", action="store_true", help="Repeat self-improve until no tasks remain")
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=int(os.getenv("AUTODNA_SELF_IMPROVE_MAX_CYCLES", "3")),
+        help="Maximum loop iterations when --loop is enabled",
+    )
     args = parser.parse_args()
 
     logger.info("Starting Autonomous-DNA Self-Improvement Loop...")
 
-    if not args.dry_run:
-        if not require_clean_working_tree():
-            sys.exit(0)
+    loop_enabled = args.loop or os.getenv("AUTODNA_SELF_IMPROVE_LOOP", "").lower() in {"1", "true", "yes"}
+    max_cycles = max(1, args.max_cycles)
 
-    task = get_next_task()
-    if not task:
-        logger.info("No actionable tasks found. Attempting task generation.")
-        if _run_taskgen_if_available():
-            task = get_next_task()
+    cycles = 0
+    while True:
+        if not args.dry_run:
+            if not require_clean_working_tree():
+                sys.exit(0)
+
+        task = get_next_task()
         if not task:
+            logger.info("No actionable tasks found. Attempting task generation.")
+            if _run_taskgen_if_available():
+                task = get_next_task()
+            if not task:
+                break
+
+        assert task is not None # Tell type checker it's safe
+
+        preferred_base = args.base_branch or os.getenv("AUTODNA_SELF_IMPROVE_BASE")
+        base_branch = resolve_base_branch(preferred_base)
+        branch_name = f"chore/self-improve-task-{task['id']}"
+
+        if args.dry_run:
+            logger.info(f"[DRY RUN] Would check out branch: {branch_name}")
+            logger.info(f"[DRY RUN] Would start swarm for task {task['id']}")
+            logger.info("[DRY RUN] Would run pytest and commit if passed")
             sys.exit(0)
 
-    assert task is not None # Tell type checker it's safe
+        try:
+            checkout_branch(branch_name, base_branch)
 
-    preferred_base = args.base_branch or os.getenv("AUTODNA_SELF_IMPROVE_BASE")
-    base_branch = resolve_base_branch(preferred_base)
-    branch_name = f"chore/self-improve-task-{task['id']}"
+            swarm_status, swarm_note = run_swarm(task)
 
-    if args.dry_run:
-        logger.info(f"[DRY RUN] Would check out branch: {branch_name}")
-        logger.info(f"[DRY RUN] Would start swarm for task {task['id']}")
-        logger.info("[DRY RUN] Would run pytest and commit if passed")
-        sys.exit(0)
-
-    try:
-        checkout_branch(branch_name, base_branch)
-
-        swarm_status, swarm_note = run_swarm(task)
-
-        if swarm_status == "done":
-            tests_passed = run_tests()
-            if tests_passed:
-                commit_changes(task)
-                update_task_status(task["id"], "done")
-                logger.info(f"Task {task['id']} completed successfully. Review branch {branch_name}.")
+            if swarm_status == "done":
+                tests_passed = run_tests()
+                if tests_passed:
+                    commit_changes(task)
+                    update_task_status(task["id"], "done")
+                    logger.info(f"Task {task['id']} completed successfully. Review branch {branch_name}.")
+                else:
+                    logger.error("Tests failed! Rolling back changes to prevent master corruption.")
+                    rollback_changes()
+                    update_task_status(task["id"], "error", "Tests failed after implementation.")
             else:
-                logger.error("Tests failed! Rolling back changes to prevent master corruption.")
+                logger.error("Swarm failed to complete task.")
                 rollback_changes()
-                update_task_status(task["id"], "error", "Tests failed after implementation.")
-        else:
-            logger.error("Swarm failed to complete task.")
+                current_status, current_notes = _get_task_status(task["id"])
+                if swarm_status == "blocked":
+                    if current_status != "blocked":
+                        update_task_status(task["id"], "blocked", swarm_note or current_notes)
+                else:
+                    update_task_status(task["id"], "error", swarm_note or current_notes or "Swarm exited with error.")
+
+            subprocess.run(["git", "checkout", base_branch], check=True)
+
+        except Exception as e:
+            logger.exception("Catastrophic error in self-improve loop:")
             rollback_changes()
-            current_status, current_notes = _get_task_status(task["id"])
-            if swarm_status == "blocked":
-                if current_status != "blocked":
-                    update_task_status(task["id"], "blocked", swarm_note or current_notes)
-            else:
-                update_task_status(task["id"], "error", swarm_note or current_notes or "Swarm exited with error.")
+            update_task_status(task["id"], "error", f"Self-improve script crashed: {e}")
+            subprocess.run(["git", "checkout", base_branch], check=True)
+            break
 
-        subprocess.run(["git", "checkout", base_branch], check=True)
-
-    except Exception as e:
-        logger.exception("Catastrophic error in self-improve loop:")
-        rollback_changes()
-        update_task_status(task["id"], "error", f"Self-improve script crashed: {e}")
-        subprocess.run(["git", "checkout", base_branch], check=True)
+        cycles += 1
+        if not loop_enabled:
+            break
+        if cycles >= max_cycles:
+            logger.info("Max self-improve cycles reached. Stopping.")
+            break
 
 if __name__ == "__main__":
     main()

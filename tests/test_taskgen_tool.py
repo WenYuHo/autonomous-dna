@@ -55,3 +55,36 @@ def test_taskgen_skips_when_actionable(tmp_path):
     assert count == 0
     data = json.loads(queue_path.read_text(encoding="utf-8"))
     assert len(data["tasks"]) == 1
+
+
+def test_taskgen_skips_when_artifact_reused(tmp_path):
+    queue_path = tmp_path / "TASK_QUEUE.json"
+    artifact_path = tmp_path / "artifact.md"
+    artifact_path.write_text("research content", encoding="utf-8")
+    seed = {
+        "tasks": [
+            {
+                "id": 10,
+                "title": "CYCLE 9 — AUTOGEN: Research Synthesis",
+                "description": "Auto cycle",
+                "ref": str(artifact_path),
+                "status": "info",
+                "assigned_to": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+                "cycle": 9,
+            }
+        ]
+    }
+    queue_path.write_text(json.dumps(seed), encoding="utf-8")
+
+    created, count = taskgen.run_taskgen(
+        queue_path=queue_path,
+        artifact_path=artifact_path,
+        if_empty=True,
+        dry_run=False,
+    )
+
+    assert created is False
+    assert count == 0
+    data = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert len(data["tasks"]) == 1
