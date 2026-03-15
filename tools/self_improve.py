@@ -24,6 +24,18 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# Enforce UTF-8 for stdout/stderr on Windows
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 TASK_QUEUE_FILE = Path("agent/TASK_QUEUE.json")
 DEFAULT_BASE_BRANCHES = ("dev", "main", "master")
 
@@ -31,7 +43,7 @@ from typing import Any, Dict, Optional
 
 def require_clean_working_tree() -> bool:
     """Ensure no uncommitted changes before starting."""
-    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.stdout.strip():
         logger.warning("Working tree is not clean. Skipping self-improve.")
         print(result.stdout)
@@ -157,7 +169,7 @@ def update_task_status(task_id: int, new_status: str, notes: Optional[str] = Non
 def checkout_branch(branch_name: str, base_branch: str) -> None:
     """Check out a new branch or switch if it exists."""
     # Check if branch exists locally
-    result = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"])
+    result = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"], encoding="utf-8", errors="replace")
     if result.returncode == 0:
         logger.info(f"Switching to existing branch: {branch_name}")
         subprocess.run(["git", "checkout", branch_name], check=True)
@@ -169,7 +181,7 @@ def checkout_branch(branch_name: str, base_branch: str) -> None:
 def run_tests() -> bool:
     """Run the pytest suite to validate changes."""
     logger.info("Running test suite...")
-    result = subprocess.run(["python", "-m", "pytest", "tests/"], capture_output=True, text=True)
+    result = subprocess.run(["python", "-m", "pytest", "tests/"], capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     if result.returncode == 0:
         logger.info("Tests passed successfully.")
@@ -285,7 +297,12 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+<<<<<<< Updated upstream
             env=env
+=======
+            encoding="utf-8",
+            errors="replace"
+>>>>>>> Stashed changes
         )
 
         start_time = time.time()
