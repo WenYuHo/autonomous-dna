@@ -5,21 +5,21 @@
 
 ## BACKLOG
 
-- [ ] BOOTSTRAP_SCRIPT: Create scripts/bootstrap.py installer.
+- [x] BOOTSTRAP_SCRIPT: Create scripts/bootstrap.py installer.
     - Detail: README references `scripts/bootstrap.py` but it doesn't exist. Create it to auto-generate missing scaffold files (platform configs, hooks, skill stubs). Must be idempotent.
     - Priority: HIGH
     - BlockedBy: NONE
     - Promise: BOOTSTRAP_WORKS
-    - Reserved: NONE
-    - Done: NONE
+    - Reserved: Antigravity @ 2026-03-15T01:37:33Z
+    - Done: 2026-03-15T01:38:38Z
 
-- [ ] TEST_AGENT_RUNNER: Add unit tests for autodna/core/agent_runner.py.
+- [x] TEST_AGENT_RUNNER: Add unit tests for autodna/core/agent_runner.py.
     - Detail: Mock subprocess.Popen, test model fallback on quota exhaustion, test retry logic on crash, test clean exit. Target 80%+ coverage.
     - Priority: HIGH
     - BlockedBy: NONE
     - Promise: AGENT_RUNNER_TESTED
-    - Reserved: NONE
-    - Done: NONE
+    - Reserved: Antigravity @ 2026-03-15T01:39:23Z
+    - Done: 2026-03-15T01:41:31Z
 
 - [ ] TEST_ENGINE_START: Add unit tests for autodna/core/engine_start.py.
     - Detail: Mock subprocess calls. Test worktree setup, junction creation, headless vs interactive launch, log file creation.

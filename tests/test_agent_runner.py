@@ -141,7 +141,7 @@ class TestAgentRunner(unittest.TestCase):
     @patch("subprocess.Popen")
     def test_all_models_exhausted(self, mock_popen):
         # Both models crash 3 times
-        proc_crash = lambda: MockProcess(["Crash\n"], returncode=1)
+        def proc_crash(): return MockProcess(["Crash\n"], returncode=1)
         mock_popen.side_effect = [
             proc_crash(), proc_crash(), proc_crash(), # model-1
             proc_crash(), proc_crash(), proc_crash()  # model-2
