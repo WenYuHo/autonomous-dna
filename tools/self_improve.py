@@ -153,6 +153,27 @@ def _summarize_swarm_failure(output: str) -> Optional[str]:
     return None
 
 
+def _scan_swarm_log(log_path: Path, offset: int) -> tuple[int, Optional[str]]:
+    if not log_path.exists():
+        return offset, None
+    try:
+        with log_path.open("r", encoding="utf-8", errors="ignore") as handle:
+            handle.seek(offset)
+            chunk = handle.read()
+            new_offset = handle.tell()
+    except Exception:
+        return offset, None
+
+    if not chunk:
+        return new_offset, None
+
+    if "AttachConsole failed" in chunk:
+        return new_offset, "Gemini CLI console attach failed."
+    if "All fallback models exhausted. Cannot continue." in chunk:
+        return new_offset, "All configured Gemini models exhausted or unavailable."
+    return new_offset, None
+
+
 def _get_task_status(task_id: int) -> tuple[Optional[str], Optional[str]]:
     tasks = _load_tasks()
     for task in tasks:
@@ -177,6 +198,8 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
         )
 
         start_time = time.time()
+        log_path = Path("agent/manager.log")
+        log_offset = log_path.stat().st_size if log_path.exists() else 0
 
         while True:
             # Check if process ended naturally
@@ -203,6 +226,12 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
 
             # Wait a bit before checking again
             time.sleep(5)
+
+            log_offset, log_note = _scan_swarm_log(log_path, log_offset)
+            if log_note:
+                logger.error(log_note)
+                process.terminate()
+                return "blocked", log_note
 
             # Periodically check TASK_QUEUE.json to see if the task is done, error, etc.
             # (In headless mode the swarm might stay alive listening, depending on implementation)
