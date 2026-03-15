@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import subprocess
 import time
 import os
@@ -30,7 +30,7 @@ def _is_codex_platform(platform_name: str) -> bool:
 
 def _build_models(is_codex: bool) -> list[str]:
     # Models ordered by preference (below Gemini 3 per user request)
-    DEFAULT_GEMINI_MODELS = "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro,gemini-1.5-flash"
+    DEFAULT_GEMINI_MODELS = "gemini-2.0-flash-exp,gemini-2.0-flash,gemini-1.5-pro,gemini-1.5-flash"
     default_models = DEFAULT_GEMINI_MODELS
     if is_codex:
         default_models = os.environ.get("AUTODNA_CODEX_MODELS", "")

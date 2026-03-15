@@ -171,12 +171,12 @@ def checkout_branch(branch_name: str, base_branch: str) -> None:
     # Check if branch exists locally
     result = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"], encoding="utf-8", errors="replace")
     if result.returncode == 0:
-        logger.info(f"Switching to existing branch: {branch_name}")
-        subprocess.run(["git", "checkout", branch_name], check=True)
-    else:
-        logger.info(f"Creating new branch from {base_branch}: {branch_name}")
-        subprocess.run(["git", "checkout", base_branch], check=True)
-        subprocess.run(["git", "checkout", "-b", branch_name], check=True)
+        logger.info(f"Existing branch found: {branch_name}. Deleting to ensure freshness.")
+        subprocess.run(["git", "branch", "-D", branch_name], check=True)
+
+    logger.info(f"Creating new branch from {base_branch}: {branch_name}")
+    subprocess.run(["git", "checkout", base_branch], check=True)
+    subprocess.run(["git", "checkout", "-b", branch_name], check=True)
 
 def run_tests() -> bool:
     """Run the pytest suite to validate changes."""
