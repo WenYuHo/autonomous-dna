@@ -25,6 +25,8 @@ def get_lint_command() -> list[str] | None:
     return None
 
 
+import shutil
+
 def fallback_linters() -> list[list[str]]:
     candidates = [
         ["ruff", "check", "."],
@@ -34,10 +36,7 @@ def fallback_linters() -> list[list[str]]:
     ]
     available = []
     for cmd in candidates:
-        result = subprocess.run(
-            ["which", cmd[0]], capture_output=True
-        )
-        if result.returncode == 0:
+        if shutil.which(cmd[0]):
             available.append(cmd)
     return available
 

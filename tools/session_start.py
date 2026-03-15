@@ -8,7 +8,11 @@ Output is designed to be read by the agent — structured for LLM consumption.
 
 from pathlib import Path
 from datetime import datetime, timezone
+import sys
 
+# Fix Windows cp1252 charmap encoding for console emojis
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 def load_section(path: Path, heading: str) -> list[str]:
     """Extract lines under a markdown heading."""

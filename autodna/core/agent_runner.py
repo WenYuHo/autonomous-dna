@@ -25,15 +25,16 @@ def main():
         model = models[current_model_index]
         print(f"[{agent_name}] 🔄 Starting agent with model: {model} (Attempt {retries + 1})")
         
-        # Build command: gemini.cmd --prompt "/ralph:loop \"...\"" --yolo --model {model}
-        cmd_list = [
-            "gemini.cmd", 
-            "--prompt", 
-            f'/ralph:loop "{mission}"', 
-            "--yolo",
-            "--model", 
-            model
-        ]
+        from autodna.core.cli_driver import get_driver
+        from pathlib import Path
+        
+        # Determine Platform to instatiate the correct Driver
+        platform_file = Path("platform/ACTIVE")
+        platform_name = platform_file.read_text().strip() if platform_file.exists() else "GEMINI"
+        driver = get_driver(platform_name)
+
+        # Build command dynamically
+        cmd_list = driver.get_command(model, mission)
         
         # We read stdout and stderr via PIPE so we can parse it for errors AND echo it.
         # This prevents UnicodeEncodeError issues when printing characters the terminal can't handle natively.
@@ -60,8 +61,8 @@ def main():
                     sys.stdout.write(line)
                     sys.stdout.flush()
                     
-                    # Check for quota exhaustion text
-                    if "exhausted your capacity on this model" in line or "QUOTA_EXHAUSTED" in line:
+                    # Check for quota exhaustion text dynamically based on the driver
+                    if driver.is_quota_exhausted(line):
                         quota_exhausted = True
                         break
         

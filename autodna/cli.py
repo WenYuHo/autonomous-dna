@@ -1,21 +1,25 @@
 import sys
 import argparse
+import pkgutil
+import importlib
 
 def main():
     parser = argparse.ArgumentParser(description="Autonomous DNA Global CLI")
     subparsers = parser.add_subparsers(dest="command", help="The command to run")
     
+    # Static Commands:
     # Start Swarm
     parser_start = subparsers.add_parser("start", help="Start the Autonomous DNA agent swarm in the current repo")
     parser_start.add_argument("--headless", action="store_true", help="Run the swarm in headless background mode")
     
-    # Tasks
-    parser_tasks = subparsers.add_parser("tasks", help="Tasks management API")
-    parser_tasks.add_argument("args", nargs=argparse.REMAINDER)
-    
-    # Context
-    parser_context = subparsers.add_parser("context", help="Architecture memory API")
-    parser_context.add_argument("args", nargs=argparse.REMAINDER)
+    # Dynamic Commands from autodna.tools:
+    import autodna.tools
+    discovered_tools = []
+    for _, module_name, _ in pkgutil.iter_modules(autodna.tools.__path__):
+        discovered_tools.append(module_name)
+        # Create a proxy subparser for each discovered module to catch the command
+        subparser = subparsers.add_parser(module_name, help=f"{module_name.capitalize()} API")
+        subparser.add_argument("args", nargs=argparse.REMAINDER)
     
     args, unknown = parser.parse_known_args()
     
@@ -25,14 +29,15 @@ def main():
         if args.headless:
             sys.argv.append("--headless")
         engine_main()
-    elif args.command == "tasks":
-        import autodna.tools.tasks
-        sys.argv = ["autodna tasks"] + (args.args if args.args else []) + unknown
-        autodna.tools.tasks.main()
-    elif args.command == "context":
-        import autodna.tools.context
-        sys.argv = ["autodna context"] + (args.args if args.args else []) + unknown
-        autodna.tools.context.main()
+    elif args.command in discovered_tools:
+        # Dynamically import and route
+        module = importlib.import_module(f"autodna.tools.{args.command}")
+        
+        # Reconstruct sys.argv passing all unprocessed trailing args directly.
+        # sys.argv[0] is the caller (e.g. cli.py), sys.argv[1] is the command.
+        # Everything after that belongs to the submodule.
+        sys.argv = [f"autodna {args.command}"] + sys.argv[2:]
+        module.main()
     else:
         parser.print_help()
 
