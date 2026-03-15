@@ -55,7 +55,7 @@ def main() -> None:
             print("(none)")
 
         backlog = load_section(tq_path, "BACKLOG")
-        available = [l for l in backlog if "Reserved: NONE" in l or l.strip().startswith("- [ ]")]
+        available = [line for line in backlog if "Reserved: NONE" in line or line.strip().startswith("- [ ]")]
         print(f"\n--- BACKLOG: {len(available)} available task(s) ---")
         for line in available[:5]:
             print(line)
@@ -68,10 +68,10 @@ def main() -> None:
     mem_path = root / "agent" / "MEMORY.md"
     if mem_path.exists():
         lines = mem_path.read_text().splitlines()
-        total = len([l for l in lines if l.strip() and not l.startswith("#")])
+        total = len([line for line in lines if line.strip() and not line.startswith("#")])
         print(f"\n--- MEMORY ({total} facts, limit 150) ---")
         # Show most recent 20 facts
-        facts = [l for l in lines if l.strip().startswith("- [")]
+        facts = [line for line in lines if line.strip().startswith("- [")]
         for fact in facts[-20:]:
             print(fact)
         if total > 20:

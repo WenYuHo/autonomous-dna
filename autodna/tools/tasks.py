@@ -1,6 +1,5 @@
 import json
 import sys
-import os
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -42,7 +41,7 @@ def list_tasks(status_filter=None):
     tasks = db["tasks"]
     if status_filter:
         tasks = [t for t in tasks if t["status"] == status_filter]
-        
+
     if not tasks:
         print("📭 No tasks found matching criteria.")
         return
@@ -83,13 +82,13 @@ def init_db_from_md():
     md_file = Path("agent/TASK_QUEUE.md")
     if not md_file.exists():
         return
-        
+
     db = {"tasks": []}
     lines = md_file.read_text(encoding="utf-8").splitlines()
-    
+
     current_task = None
     task_id_counter = 1
-    
+
     for line in lines:
         if line.startswith("- [ ] **") or line.startswith("- [x] **"):
             is_completed = "[x]" in line
@@ -113,7 +112,7 @@ def init_db_from_md():
             current_task["assigned_to"] = line.split("Reserved:")[1].split("@")[0].strip()
             if not is_completed:
                 current_task["status"] = "in_progress"
-                
+
     save_db(db)
     print(f"✅ Migrated {len(db['tasks'])} tasks from Markdown to JSON DB.")
     # Deprecate the old file to prevent agents reading it
@@ -123,30 +122,30 @@ def init_db_from_md():
 def main():
     parser = argparse.ArgumentParser(description="Symphony V3 Task API")
     subparsers = parser.add_subparsers(dest="action", help="Action to perform")
-    
+
     # Init
     subparsers.add_parser("init", help="Convert TASK_QUEUE.md to JSON")
-    
+
     # List
     parser_list = subparsers.add_parser("list", help="List tasks")
     parser_list.add_argument("--status", choices=["pending", "in_progress", "completed"], help="Filter by status")
-    
+
     # Add
     parser_add = subparsers.add_parser("add", help="Add a new task")
     parser_add.add_argument("title", help="Task title")
     parser_add.add_argument("description", help="Task details")
-    
+
     # Claim
     parser_claim = subparsers.add_parser("claim", help="Claim a task")
     parser_claim.add_argument("id", type=int, help="Task ID")
     parser_claim.add_argument("agent", help="Agent claiming the task (e.g. worker-1)")
-    
+
     # Complete
     parser_complete = subparsers.add_parser("complete", help="Complete a task")
     parser_complete.add_argument("id", type=int, help="Task ID")
-    
+
     args = parser.parse_args()
-    
+
     if args.action == "init":
         init_db_from_md()
     elif args.action == "list":

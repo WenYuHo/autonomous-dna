@@ -17,11 +17,11 @@ class GeminiDriver(BaseDriver):
     def get_command(self, model: str, mission: str) -> List[str]:
         # Uses the legacy /ralph:loop syntax specific to Gemini CLI
         return [
-            "gemini.cmd", 
-            "--prompt", 
-            f'/ralph:loop "{mission}"', 
+            "gemini.cmd",
+            "--prompt",
+            f'/ralph:loop "{mission}"',
             "--yolo",
-            "--model", 
+            "--model",
             model
         ]
 
@@ -32,8 +32,8 @@ class ClaudeDriver(BaseDriver):
     def get_command(self, model: str, mission: str) -> List[str]:
         # Claude Code prefers generic shell invocation
         return [
-            "claude", 
-            "-p", 
+            "claude",
+            "-p",
             mission
         ]
 
@@ -51,7 +51,7 @@ class AiderDriver(BaseDriver):
             "--model",
             model
         ]
-        
+
     def is_quota_exhausted(self, line: str) -> bool:
         return "429" in line and "rate limit" in line.lower()
 

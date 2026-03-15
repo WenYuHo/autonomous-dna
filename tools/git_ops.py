@@ -10,11 +10,9 @@ Usage:
   python tools/git_ops.py TASK_ID merge <pr_url>            # monitor CI + merge
 """
 
-import re
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
