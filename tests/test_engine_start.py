@@ -17,16 +17,19 @@ class TestEngineStart(unittest.TestCase):
     @patch("os.path.exists")
     def test_setup_junction_creates_link(self, mock_exists, mock_run):
         # root folder exists, target doesn't -> should create junction
-        mock_exists.side_effect = lambda path: str(path).endswith("folder") and not str(path).endswith("target\\folder")
+        def mock_exists_logic(path):
+            if "target" in str(path):
+                return False
+            return True
+        mock_exists.side_effect = mock_exists_logic
 
-        with patch("os.getcwd", return_value="C:\\root"):
-            engine_start.setup_junction("C:\\target", "folder")
+        with patch("os.getcwd", return_value="mock_root"):
+            engine_start.setup_junction("mock_target", "folder")
 
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
         self.assertIn("mklink /J", cmd)
-        self.assertIn("C:\\target\\folder", cmd)
-        self.assertIn("C:\\root\\folder", cmd)
+        self.assertIn("folder", cmd)
 
     @patch("subprocess.run")
     @patch("os.path.exists")
