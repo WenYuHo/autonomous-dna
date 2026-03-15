@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 import re
+import queue
+import threading
 from pathlib import Path
 
 # Setup basic logging
@@ -174,6 +176,22 @@ def _scan_swarm_log(log_path: Path, offset: int) -> tuple[int, Optional[str]]:
     return new_offset, None
 
 
+def _start_output_reader(process: subprocess.Popen) -> queue.Queue:
+    output_queue: queue.Queue = queue.Queue()
+
+    def _reader() -> None:
+        if process.stdout is None:
+            output_queue.put(None)
+            return
+        for line in iter(process.stdout.readline, ""):
+            output_queue.put(line)
+        output_queue.put(None)
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
+    return output_queue
+
+
 def _get_task_status(task_id: int) -> tuple[Optional[str], Optional[str]]:
     tasks = _load_tasks()
     for task in tasks:
@@ -200,8 +218,29 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
         start_time = time.time()
         log_path = Path("agent/manager.log")
         log_offset = log_path.stat().st_size if log_path.exists() else 0
+        output_queue = _start_output_reader(process)
+        recent_output: list[str] = []
 
         while True:
+            while True:
+                try:
+                    line = output_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if line is None:
+                    break
+                recent_output.append(line)
+                if len(recent_output) > 200:
+                    recent_output.pop(0)
+                if "AttachConsole failed" in line:
+                    logger.error("Gemini CLI console attach failed.")
+                    process.terminate()
+                    return "blocked", "Gemini CLI console attach failed."
+                if "All fallback models exhausted. Cannot continue." in line:
+                    logger.error("All configured Gemini models exhausted or unavailable.")
+                    process.terminate()
+                    return "blocked", "All configured Gemini models exhausted or unavailable."
+
             # Check if process ended naturally
             retcode = process.poll()
             if retcode is not None:
@@ -211,8 +250,11 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
                 logger.error(f"Swarm exited with error code {retcode}")
                 # Output the logs to help debug
                 out, _ = process.communicate()
-                print(out[-2000:] if out else "No output.")
-                summary = _summarize_swarm_failure(out or "")
+                if out:
+                    recent_output.append(out)
+                output_blob = "".join(recent_output)[-2000:]
+                print(output_blob if output_blob else "No output.")
+                summary = _summarize_swarm_failure("".join(recent_output))
                 if summary:
                     return "blocked", summary
                 return "error", None
