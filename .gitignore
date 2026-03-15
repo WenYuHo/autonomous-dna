@@ -21,6 +21,7 @@ Thumbs.db
 # Agent Runtime State
 agent/traces/
 agent/reports/
+agent/skills/
 agent/MEMORY.md
 agent/MEMORY.jsonl
 agent/TASK_QUEUE.json

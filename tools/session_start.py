@@ -8,11 +8,9 @@ Output is designed to be read by the agent — structured for LLM consumption.
 
 from pathlib import Path
 from datetime import datetime, timezone
-import sys
 
 # Fix Windows cp1252 charmap encoding for console emojis
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+# This block is moved inside main() as per the instruction's implied structure.
 
 def load_section(path: Path, heading: str) -> list[str]:
     """Extract lines under a markdown heading."""
@@ -55,7 +53,7 @@ def main() -> None:
             print("(none)")
 
         backlog = load_section(tq_path, "BACKLOG")
-        available = [l for l in backlog if "Reserved: NONE" in l or l.strip().startswith("- [ ]")]
+        available = [line for line in backlog if "Reserved: NONE" in line or line.strip().startswith("- [ ]")]
         print(f"\n--- BACKLOG: {len(available)} available task(s) ---")
         for line in available[:5]:
             print(line)
@@ -68,10 +66,10 @@ def main() -> None:
     mem_path = root / "agent" / "MEMORY.md"
     if mem_path.exists():
         lines = mem_path.read_text().splitlines()
-        total = len([l for l in lines if l.strip() and not l.startswith("#")])
+        total = len([line for line in lines if line.strip() and not line.startswith("#")])
         print(f"\n--- MEMORY ({total} facts, limit 150) ---")
         # Show most recent 20 facts
-        facts = [l for l in lines if l.strip().startswith("- [")]
+        facts = [line for line in lines if line.strip().startswith("- [")]
         for fact in facts[-20:]:
             print(fact)
         if total > 20:
@@ -109,13 +107,13 @@ def main() -> None:
         "context management":         "skills/context/SKILL.md",
     }
     for label, path in skills.items():
-        exists = "✓" if (root / path).exists() else "✗ MISSING"
-        print(f"  {exists}  {label:35s} → {path}")
+        exists = "[OK]" if (root / path).exists() else "[XX]"
+        print(f"  {exists}  {label:35s} -> {path}")
 
     print("\n--- HARD RULES REMINDER ---")
     print("NEVER edit scaffold files. NEVER mark done if tests fail.")
     print("NEVER force-push to main/master/develop.")
-    print("IF context degraded → re-run this script.")
+    print("IF context degraded -> re-run this script.")
     print("=" * 60)
     print("Ready. Pick the highest-priority unreserved task and begin.")
     print("=" * 60)

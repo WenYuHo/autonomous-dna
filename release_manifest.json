@@ -1,0 +1,34 @@
+﻿{
+    "exclude":  [
+                    ".git/",
+                    ".github/",
+                    ".antigravity/",
+                    ".claude/",
+                    ".codex/",
+                    ".mcp.json",
+                    "_mcp.json",
+                    "AGENTS.md",
+                    "CLAUDE.md",
+                    "GEMINI.md",
+                    "README.md",
+                    "README.release.md",
+                    "agent/",
+                    "skills/",
+                    "tools/",
+                    "scripts/",
+                    "tests/",
+                    "worker-1/",
+                    "worker-2/",
+                    "autodna.egg-info/",
+                    ".pytest_cache/",
+                    ".ruff_cache/",
+                    "bridge.py",
+                    "docs/",
+                    "dist/",
+                    "release_manifest.json",
+                    "self_improve.json"
+                ],
+    "rename":  {
+                   "README.release.md":  "README.md"
+               }
+}

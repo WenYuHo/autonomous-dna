@@ -40,16 +40,16 @@ def list_docs():
 def main():
     parser = argparse.ArgumentParser(description="Symphony Context/Memory CLI Tool")
     subparsers = parser.add_subparsers(dest="action", help="Action to perform")
-    
+
     # List
     subparsers.add_parser("list", help="List available documentation topics")
-    
+
     # Get
     parser_get = subparsers.add_parser("get", help="Fetch context for a specific topic")
     parser_get.add_argument("topic", help="The topic to retrieve (e.g., 'map', 'memory')")
-    
+
     args = parser.parse_args()
-    
+
     if args.action == "list":
         list_docs()
     elif args.action == "get":

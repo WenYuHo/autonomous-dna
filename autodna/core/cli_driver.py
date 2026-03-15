@@ -5,6 +5,8 @@ allowing the agent runner to be completely agnostic to the underlying LLM platfo
 """
 
 from typing import List
+import os
+import shlex
 
 class BaseDriver:
     def get_command(self, model: str, mission: str) -> List[str]:
@@ -17,11 +19,11 @@ class GeminiDriver(BaseDriver):
     def get_command(self, model: str, mission: str) -> List[str]:
         # Uses the legacy /ralph:loop syntax specific to Gemini CLI
         return [
-            "gemini.cmd", 
-            "--prompt", 
-            f'/ralph:loop "{mission}"', 
+            "gemini.cmd",
+            "--prompt",
+            f'/ralph:loop "{mission}"',
             "--yolo",
-            "--model", 
+            "--model",
             model
         ]
 
@@ -32,8 +34,8 @@ class ClaudeDriver(BaseDriver):
     def get_command(self, model: str, mission: str) -> List[str]:
         # Claude Code prefers generic shell invocation
         return [
-            "claude", 
-            "-p", 
+            "claude",
+            "-p",
             mission
         ]
 
@@ -51,15 +53,37 @@ class AiderDriver(BaseDriver):
             "--model",
             model
         ]
-        
+
     def is_quota_exhausted(self, line: str) -> bool:
         return "429" in line and "rate limit" in line.lower()
 
+class CodexDriver(BaseDriver):
+    def get_command(self, model: str, mission: str) -> List[str]:
+        cmd = os.environ.get("AUTODNA_CODEX_CMD", "codex")
+        prompt_flag = os.environ.get("AUTODNA_CODEX_PROMPT_FLAG", "--prompt")
+        model_flag = os.environ.get("AUTODNA_CODEX_MODEL_FLAG", "--model")
+        extra_args = os.environ.get("AUTODNA_CODEX_EXTRA_ARGS", "")
+
+        cmd_parts = shlex.split(cmd, posix=(os.name != "nt"))
+        command = cmd_parts + [prompt_flag, mission]
+        if model:
+            command += [model_flag, model]
+        if extra_args:
+            command += shlex.split(extra_args, posix=(os.name != "nt"))
+        return command
+
+    def is_quota_exhausted(self, line: str) -> bool:
+        return "rate limit" in line.lower() or "quota" in line.lower()
+
 def get_driver(platform_name: str) -> BaseDriver:
     plat = platform_name.strip().upper()
-    if plat == "CLAUDE_CODE":
+    if plat in {"CLAUDE_CODE", "CLAUDE-CODE", "CLAUDE"}:
         return ClaudeDriver()
     elif plat == "AIDER":
         return AiderDriver()
+    elif plat in {"CODEX", "CODEX_APP", "CODEX_DESKTOP", "CODEX_CLI", "OPENAI"}:
+        return CodexDriver()
+    elif plat in {"GEMINI", "GEMINI_CLI", "GEMINI-CLI", "ANTIGRAVITY"}:
+        return GeminiDriver()
     # Default to Gemini if unknown or specifically requested
     return GeminiDriver()
