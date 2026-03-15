@@ -260,10 +260,11 @@ def _start_output_reader(process: subprocess.Popen) -> queue.Queue:
     output_queue: queue.Queue = queue.Queue()
 
     def _reader() -> None:
-        if process.stdout is None:
+        stdout = process.stdout
+        if stdout is None:
             output_queue.put(None)
             return
-        for line in iter(process.stdout.readline, ""):
+        for line in iter(stdout.readline, ""):
             output_queue.put(line)
         output_queue.put(None)
 
@@ -297,12 +298,9 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-<<<<<<< Updated upstream
-            env=env
-=======
+            env=env,
             encoding="utf-8",
             errors="replace"
->>>>>>> Stashed changes
         )
 
         start_time = time.time()
