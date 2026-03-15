@@ -37,13 +37,13 @@
     - Reserved: Antigravity @ 2026-03-15T01:45:14Z
     - Done: 2026-03-15T01:45:34Z
 
-- [ ] ERROR_HANDLING: Improve CLI error handling and user messaging.
+- [x] ERROR_HANDLING: Improve CLI error handling and user messaging.
     - Detail: `autodna start` should check if git is initialized, if worktrees exist before creating, and print actionable errors. `cli.py` should catch ImportError if tools are broken.
     - Priority: MED
     - BlockedBy: NONE
     - Promise: ERRORS_HANDLED
-    - Reserved: NONE
-    - Done: NONE
+    - Reserved: Antigravity @ 2026-03-15T01:45:41Z
+    - Done: 2026-03-15T01:46:45Z
 
 ## DONE
 
