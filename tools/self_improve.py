@@ -81,6 +81,25 @@ def get_next_task() -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_retry_task() -> Optional[Dict[str, Any]]:
+    """Find the first retryable error/blocked task whose blockers are resolved."""
+    tasks = _load_tasks()
+    by_id = _task_by_id(tasks)
+
+    for task in tasks:
+        status = task.get("status")
+        if status not in {"error", "blocked"}:
+            continue
+        if task.get("title", "").strip().upper().startswith("CYCLE"):
+            continue
+        if _is_blocked(task, by_id):
+            continue
+        logger.info(f"Retrying failed task: {task['id']} - {task['title']}")
+        return task
+
+    return None
+
+
 def _run_taskgen_if_available() -> bool:
     command = [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"]
     try:
@@ -399,11 +418,16 @@ def main():
 
         task = get_next_task()
         if not task:
-            logger.info("No actionable tasks found. Attempting task generation.")
-            if _run_taskgen_if_available():
-                task = get_next_task()
-            if not task:
-                break
+            retry_task = get_retry_task()
+            if retry_task:
+                update_task_status(retry_task["id"], "pending", "Auto-retry after error.")
+                task = retry_task
+            else:
+                logger.info("No actionable tasks found. Attempting task generation.")
+                if _run_taskgen_if_available():
+                    task = get_next_task()
+                if not task:
+                    break
 
         assert task is not None # Tell type checker it's safe
 
