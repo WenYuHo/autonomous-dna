@@ -16,5 +16,6 @@
 - [x] IMPROVE_LOOP: Add autodna improve command with gated apply/revert flow (Reserved: Codex @ 2026-03-15T04:39:03Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-15T04:41:04Z)
 - [x] EPOCH_IMPROVE: Wire autodna improve into epoch loop with configurable args (Reserved: Codex @ 2026-03-15T04:43:42Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-15T04:44:26Z)
 - [x] CLEAN_CODEX_CONFIG: Remove local trusted_projects entry from .codex/config.toml (Reserved: NONE | BlockedBy: NONE | Priority: MED | Done: 2026-03-15T05:15:46Z)
+- [x] AUTO_SELF_IMPROVE: Run self-improve automatically during epoch without flags (Reserved: Codex @ 2026-03-15T05:12:16Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-15T05:16:58Z)
 
 ## DONE

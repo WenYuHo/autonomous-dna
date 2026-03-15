@@ -10,6 +10,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -20,6 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 TASK_QUEUE_FILE = Path("agent/TASK_QUEUE.json")
+DEFAULT_BASE_BRANCHES = ("dev", "main", "master")
 
 from typing import Any, Dict, Optional
 
@@ -34,8 +36,8 @@ def require_clean_working_tree():
 def get_next_task() -> Optional[Dict[str, Any]]:
     """Find the first pending task in TASK_QUEUE.json."""
     if not TASK_QUEUE_FILE.exists():
-        logger.error(f"{TASK_QUEUE_FILE} not found.")
-        sys.exit(1)
+        logger.info(f"{TASK_QUEUE_FILE} not found. No pending tasks to run.")
+        return None
 
     with open(TASK_QUEUE_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -47,6 +49,26 @@ def get_next_task() -> Optional[Dict[str, Any]]:
 
     logger.info("No pending tasks found.")
     return None
+
+def branch_exists(branch_name: str) -> bool:
+    refs = [f"refs/heads/{branch_name}", f"refs/remotes/origin/{branch_name}"]
+    for ref in refs:
+        result = subprocess.run(["git", "show-ref", "--verify", "--quiet", ref])
+        if result.returncode == 0:
+            return True
+    return False
+
+def resolve_base_branch(preferred: Optional[str]) -> str:
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    candidates.extend(DEFAULT_BASE_BRANCHES)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if branch_exists(candidate):
+            return candidate
+    return "main"
 
 def update_task_status(task_id: int, new_status: str, notes: Optional[str] = None) -> None:
     """Update task status in TASK_QUEUE.json to prevent infinite loops."""
@@ -63,7 +85,7 @@ def update_task_status(task_id: int, new_status: str, notes: Optional[str] = Non
     with open(TASK_QUEUE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def checkout_branch(branch_name: str) -> None:
+def checkout_branch(branch_name: str, base_branch: str) -> None:
     """Check out a new branch or switch if it exists."""
     # Check if branch exists locally
     result = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"])
@@ -71,8 +93,8 @@ def checkout_branch(branch_name: str) -> None:
         logger.info(f"Switching to existing branch: {branch_name}")
         subprocess.run(["git", "checkout", branch_name], check=True)
     else:
-        logger.info(f"Creating new branch from main: {branch_name}")
-        subprocess.run(["git", "checkout", "main"], check=True)
+        logger.info(f"Creating new branch from {base_branch}: {branch_name}")
+        subprocess.run(["git", "checkout", base_branch], check=True)
         subprocess.run(["git", "checkout", "-b", branch_name], check=True)
 
 def run_tests() -> bool:
@@ -170,6 +192,7 @@ def rollback_changes() -> None:
 def main():
     parser = argparse.ArgumentParser(description="Autonomous DNA Dogfooding Orchestrator")
     parser.add_argument("--dry-run", action="store_true", help="Print what would happen without spawning swarm")
+    parser.add_argument("--base-branch", default=None, help="Base branch to create self-improve branches from")
     args = parser.parse_args()
 
     logger.info("Starting Autonomous-DNA Self-Improvement Loop...")
@@ -183,6 +206,8 @@ def main():
 
     assert task is not None # Tell type checker it's safe
 
+    preferred_base = args.base_branch or os.getenv("AUTODNA_SELF_IMPROVE_BASE")
+    base_branch = resolve_base_branch(preferred_base)
     branch_name = f"chore/self-improve-task-{task['id']}"
 
     if args.dry_run:
@@ -192,7 +217,7 @@ def main():
         sys.exit(0)
 
     try:
-        checkout_branch(branch_name)
+        checkout_branch(branch_name, base_branch)
 
         success = run_swarm(task)
 
@@ -211,13 +236,13 @@ def main():
             rollback_changes()
             update_task_status(task["id"], "error", "Swarm exited with error or timeout.")
 
-        subprocess.run(["git", "checkout", "main"], check=True)
+        subprocess.run(["git", "checkout", base_branch], check=True)
 
     except Exception as e:
         logger.exception("Catastrophic error in self-improve loop:")
         rollback_changes()
         update_task_status(task["id"], "error", f"Self-improve script crashed: {e}")
-        subprocess.run(["git", "checkout", "main"], check=True)
+        subprocess.run(["git", "checkout", base_branch], check=True)
 
 if __name__ == "__main__":
     main()

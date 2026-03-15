@@ -5,6 +5,8 @@ import datetime
 import time
 import os
 import shlex
+import json
+from pathlib import Path
 
 RESEARCH_RETRIES = 2
 EVAL_RETRIES = 2
@@ -13,6 +15,9 @@ RESEARCH_TIMEOUT_SECONDS = 300
 EVAL_TIMEOUT_SECONDS = 120
 IMPROVE_RETRIES = 1
 IMPROVE_TIMEOUT_SECONDS = 1800
+SELF_IMPROVE_RETRIES = 1
+SELF_IMPROVE_TIMEOUT_SECONDS = 3600
+SELF_IMPROVE_CONFIG = "self_improve.json"
 
 
 def run_with_retries(command: list[str], attempts: int, delay_seconds: int, timeout_seconds: int, label: str) -> bool:
@@ -21,9 +26,9 @@ def run_with_retries(command: list[str], attempts: int, delay_seconds: int, time
             subprocess.run(command, check=True, timeout=timeout_seconds)
             return True
         except subprocess.TimeoutExpired:
-            print(f"Ã¢Å¡Â Ã¯Â¸Â {label} timed out (attempt {attempt}/{attempts}).")
+            print(f"[WARN] {label} timed out (attempt {attempt}/{attempts}).")
         except subprocess.CalledProcessError:
-            print(f"Ã¢Å¡Â Ã¯Â¸Â {label} failed (attempt {attempt}/{attempts}).")
+            print(f"[WARN] {label} failed (attempt {attempt}/{attempts}).")
         if attempt < attempts and delay_seconds > 0:
             time.sleep(delay_seconds)
     return False
@@ -37,43 +42,115 @@ def parse_improve_args(cli_args: list[str]) -> list[str]:
         return []
     return shlex.split(env_args, posix=(os.name != "nt"))
 
-def main():
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
+
+def parse_command(command: str) -> list[str]:
+    return shlex.split(command, posix=(os.name != "nt"))
+
+
+def load_self_improve_config(config_path: Path) -> dict | None:
+    if not config_path.exists():
+        return None
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[WARN] Failed to read self-improve config {config_path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"[WARN] Self-improve config must be a JSON object: {config_path}")
+        return None
+    enabled = bool(data.get("enabled", True))
+    command = str(data.get("command", "python tools/self_improve.py")).strip()
+    if not command:
+        print(f"[WARN] Self-improve config missing command: {config_path}")
+        return None
+    timeout_seconds = int(data.get("timeout_seconds", SELF_IMPROVE_TIMEOUT_SECONDS))
+    retries = int(data.get("retries", SELF_IMPROVE_RETRIES))
+    return {
+        "enabled": enabled,
+        "command": command,
+        "timeout_seconds": timeout_seconds,
+        "retries": retries,
+        "path": config_path,
+    }
+
+
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Autonomous DNA Self-Improvement Epoch")
     parser.add_argument("--improve", action="store_true", help="Run improve step during epoch")
     parser.add_argument("--improve-arg", action="append", default=[], help="Pass-through arg for autodna improve")
     parser.add_argument("--improve-timeout", type=int, default=IMPROVE_TIMEOUT_SECONDS, help="Timeout for improve step")
     parser.add_argument("--improve-retries", type=int, default=IMPROVE_RETRIES, help="Retry count for improve step")
+    parser.add_argument(
+        "--no-self-improve",
+        action="store_true",
+        help="Disable automatic self-improve step even if config is present",
+    )
 
     args_to_parse = sys.argv[1:]
     if sys.argv and sys.argv[0].startswith("autodna"):
-         args_to_parse = sys.argv[1:]
+        args_to_parse = sys.argv[1:]
     args, _ = parser.parse_known_args(args_to_parse)
 
+    config_path = Path(os.getenv("AUTODNA_SELF_IMPROVE_CONFIG", SELF_IMPROVE_CONFIG))
+    self_improve_cfg = load_self_improve_config(config_path)
+    self_improve_enabled = bool(self_improve_cfg and self_improve_cfg["enabled"] and not args.no_self_improve)
+
+    improve_args = parse_improve_args(args.improve_arg)
+    improve_enabled = bool(args.improve or improve_args)
+
+    total_steps = 4
+    if self_improve_enabled:
+        total_steps += 1
+    if improve_enabled:
+        total_steps += 1
+
     print("============================================================")
-    print(f"ðŸ§¬ AUTONOMOUS DNA: SELF-IMPROVEMENT EPOCH - {datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    print(f"AUTONOMOUS DNA: SELF-IMPROVEMENT EPOCH - {datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}")
     print("============================================================")
 
-    print("\n[1/5] EVOLUTIONARY RESEARCH ðŸ”­")
+    step = 1
+    print(f"\n[{step}/{total_steps}] EVOLUTIONARY RESEARCH")
     print("Spawning agent to discover latest AI coding agent best practices...")
     sys.stdout.flush()
     research_ok = run_with_retries(
-        [sys.executable, "autodna/cli.py", "research", "latest state of the art AI coding agent system prompts and framework architecture 2026"],
+        [
+            sys.executable,
+            "autodna/cli.py",
+            "research",
+            "latest state of the art AI coding agent system prompts and framework architecture 2026",
+        ],
         attempts=RESEARCH_RETRIES,
         delay_seconds=RETRY_DELAY_SECONDS,
         timeout_seconds=RESEARCH_TIMEOUT_SECONDS,
         label="Research phase",
     )
     if not research_ok:
-        print("âš ï¸ Research phase failed after retries. Continuing with existing memory fragments.")
+        print("[WARN] Research phase failed after retries. Continuing with existing memory fragments.")
+    step += 1
 
-    improve_args = parse_improve_args(args.improve_arg)
-    if args.improve or improve_args:
-        print("\n[2/5] IMPROVEMENT ðŸ§ª")
+    if self_improve_enabled:
+        print(f"\n[{step}/{total_steps}] SELF-IMPROVEMENT")
+        print(f"Running self-improve command from {self_improve_cfg['path']}")
+        sys.stdout.flush()
+        command = parse_command(self_improve_cfg["command"])
+        self_ok = run_with_retries(
+            command,
+            attempts=max(1, self_improve_cfg["retries"]),
+            delay_seconds=RETRY_DELAY_SECONDS,
+            timeout_seconds=self_improve_cfg["timeout_seconds"],
+            label="Self-improve phase",
+        )
+        if not self_ok:
+            print("[WARN] Self-improve phase failed after retries.")
+        step += 1
+
+    if improve_enabled:
+        print(f"\n[{step}/{total_steps}] IMPROVEMENT")
         sys.stdout.flush()
         if not improve_args:
-            print("âš ï¸ Improve step enabled but no args provided. Skipping.")
+            print("[WARN] Improve step enabled but no args provided. Skipping.")
         else:
             improve_ok = run_with_retries(
                 [sys.executable, "autodna/cli.py", "improve", *improve_args],
@@ -83,9 +160,10 @@ def main():
                 label="Improve phase",
             )
             if not improve_ok:
-                print("âš ï¸ Improve phase failed after retries.")
+                print("[WARN] Improve phase failed after retries.")
+        step += 1
 
-    print("\n[3/5] DEFRAGMENTATION & EVALUATION ðŸ§¹")
+    print(f"\n[{step}/{total_steps}] DEFRAGMENTATION & EVALUATION")
     sys.stdout.flush()
     eval_ok = run_with_retries(
         [sys.executable, "autodna/cli.py", "eval"],
@@ -95,14 +173,17 @@ def main():
         label="Eval phase",
     )
     if not eval_ok:
-        print("âš ï¸ Eval phase failed after retries.")
+        print("[WARN] Eval phase failed after retries.")
+    step += 1
 
-    print("\n[4/5] SYNCING MEMORY FRAGMENTS ðŸ”„")
+    print(f"\n[{step}/{total_steps}] SYNCING MEMORY FRAGMENTS")
     print("Memory and queue state analyzed.")
+    step += 1
 
-    print("\n[5/5] EPOCH COMPLETE âœ…")
+    print(f"\n[{step}/{total_steps}] EPOCH COMPLETE")
     print("=" * 60)
     print("The agent's genetic material (MEMORY.md and TASK_QUEUE.md) is now state-of-the-art and defragmented.")
+
 
 if __name__ == "__main__":
     main()

@@ -25,7 +25,8 @@
                     "bridge.py",
                     "docs/",
                     "dist/",
-                    "release_manifest.json"
+                    "release_manifest.json",
+                    "self_improve.json"
                 ],
     "rename":  {
                    "README.release.md":  "README.md"

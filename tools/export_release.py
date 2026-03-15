@@ -32,6 +32,7 @@ DEFAULT_EXCLUDES = [
     "docs/",
     "dist/",
     "release_manifest.json",
+    "self_improve.json",
 ]
 
 DEFAULT_RENAMES = {
