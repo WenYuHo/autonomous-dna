@@ -51,6 +51,8 @@ def launch_agent(name, mission, color="0A", headless=False):
         return None
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
     print("--- 🧬 AUTONOMOUS DNA ORCHESTRATOR ---")
     headless = "--headless" in sys.argv
     
