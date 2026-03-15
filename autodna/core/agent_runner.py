@@ -48,6 +48,7 @@ def main():
         )
 
         quota_exhausted = False
+        model_unavailable = False
 
         # Read the stream eagerly
         if process.stdout is not None:
@@ -61,7 +62,11 @@ def main():
                     sys.stdout.write(line)
                     sys.stdout.flush()
 
-                    # Check for quota exhaustion text dynamically based on the driver
+                    # Check for model availability / quota exhaustion text dynamically based on the driver
+                    if "ModelNotFoundError" in line or "Requested entity was not found" in line:
+                        model_unavailable = True
+                        quota_exhausted = True
+                        break
                     if driver.is_quota_exhausted(line):
                         quota_exhausted = True
                         break
@@ -75,7 +80,10 @@ def main():
                 process.kill()
 
         if quota_exhausted:
-            print(f"[{agent_name}] ⚠️ Quota exhausted for model {model}.")
+            if model_unavailable:
+                print(f"[{agent_name}] Model unavailable: {model}.")
+            else:
+                print(f"[{agent_name}] Quota exhausted for model {model}.")
             current_model_index += 1
             retries = 0
             if current_model_index < len(models):
