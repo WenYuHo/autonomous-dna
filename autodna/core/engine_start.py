@@ -20,7 +20,10 @@ def setup_junction(target_dir, folder_name):
 def setup_worktree(name):
     if not os.path.exists(name):
         print(f"📂 Creating worktree: {name}...")
-        subprocess.run(f"git worktree add {name} -b autodna-{name}", shell=True)
+        res = subprocess.run(f"git worktree add {name} -b autodna-{name}", shell=True)
+        if res.returncode != 0:
+            print(f"❌ Error: Failed to create worktree '{name}'. Check git status (e.g., commit changes first).")
+            sys.exit(1)
 
     # Share the environments to save RAM/Disk
     setup_junction(name, ".venv")
@@ -54,6 +57,11 @@ def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
     print("--- 🧬 AUTONOMOUS DNA ORCHESTRATOR ---")
+
+    if not os.path.exists(".git"):
+        print("❌ Error: Not a git repository. Please run `git init` and commit first.")
+        sys.exit(1)
+
     headless = "--headless" in sys.argv
 
     # 1. Clean up stale locks

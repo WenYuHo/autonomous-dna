@@ -42,6 +42,7 @@ class TestEngineStart(unittest.TestCase):
     def test_setup_worktree_runs_git(self, mock_exists, mock_run):
         # name dir doesn't exist
         mock_exists.return_value = False
+        mock_run.return_value.returncode = 0
 
         with patch("autodna.core.engine_start.setup_junction") as mock_junction:
             engine_start.setup_worktree("worker-3")
@@ -56,6 +57,15 @@ class TestEngineStart(unittest.TestCase):
             self.assertEqual(calls[0][0], ("worker-3", ".venv"))
             self.assertEqual(calls[1][0], ("worker-3", "node_modules"))
             self.assertEqual(calls[2][0], ("worker-3", "models"))
+
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    def test_setup_worktree_fails(self, mock_exists, mock_run):
+        mock_exists.return_value = False
+        mock_run.return_value.returncode = 128
+
+        with self.assertRaises(SystemExit):
+            engine_start.setup_worktree("worker-3")
 
     @patch("subprocess.run")
     def test_launch_agent_interactive(self, mock_run):

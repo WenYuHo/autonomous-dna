@@ -31,7 +31,11 @@ def main():
         engine_main()
     elif args.command in discovered_tools:
         # Dynamically import and route
-        module = importlib.import_module(f"autodna.tools.{args.command}")
+        try:
+            module = importlib.import_module(f"autodna.tools.{args.command}")
+        except ImportError as e:
+            print(f"❌ Error: Failed to load tool '{args.command}'. ({e})")
+            sys.exit(1)
 
         # Reconstruct sys.argv passing all unprocessed trailing args directly.
         # sys.argv[0] is the caller (e.g. cli.py), sys.argv[1] is the command.
