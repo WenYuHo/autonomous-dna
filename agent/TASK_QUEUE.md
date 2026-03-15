@@ -21,20 +21,20 @@
     - Reserved: Antigravity @ 2026-03-15T01:39:23Z
     - Done: 2026-03-15T01:41:31Z
 
-- [ ] TEST_ENGINE_START: Add unit tests for autodna/core/engine_start.py.
+- [x] TEST_ENGINE_START: Add unit tests for autodna/core/engine_start.py.
     - Detail: Mock subprocess calls. Test worktree setup, junction creation, headless vs interactive launch, log file creation.
     - Priority: MED
     - BlockedBy: NONE
     - Promise: ENGINE_START_TESTED
-    - Reserved: NONE
-    - Done: NONE
+    - Reserved: Antigravity @ 2026-03-15T01:41:53Z
+    - Done: 2026-03-15T01:42:30Z
 
 - [ ] PLATFORM_CONFIGS: Add missing platform config files.
     - Detail: Create `.antigravity/rules.md`, `.codex/config.toml` with sensible defaults. These are flagged missing by bridge.py validation.
     - Priority: MED
     - BlockedBy: NONE
     - Promise: PLATFORM_CONFIGS_PRESENT
-    - Reserved: NONE
+    - Reserved: Antigravity @ 2026-03-15T01:45:14Z
     - Done: NONE
 
 - [ ] ERROR_HANDLING: Improve CLI error handling and user messaging.
