@@ -1,11 +1,27 @@
-import os
+﻿import os
 import subprocess
 import time
 import sys
 import pathlib
 
+GEMINI_PLATFORMS = {"GEMINI", "GEMINI_CLI", "GEMINI-CLI", "ANTIGRAVITY"}
+
+
+def resolve_platform() -> str:
+    env_platform = os.environ.get("AUTODNA_PLATFORM")
+    if env_platform:
+        return env_platform
+    active = pathlib.Path("platform/ACTIVE")
+    if active.exists():
+        value = active.read_text().strip()
+        if value:
+            return value
+    return "GEMINI"
+
+
 def run(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
 
 def setup_junction(target_dir, folder_name):
     """Creates a Windows Junction to share the environment."""
@@ -13,22 +29,24 @@ def setup_junction(target_dir, folder_name):
     target_folder = os.path.join(target_dir, folder_name)
 
     if os.path.exists(root_folder) and not os.path.exists(target_folder):
-        print(f"🔗 Linking {folder_name} to {target_dir}...")
+        print(f"ðŸ”— Linking {folder_name} to {target_dir}...")
         # /J creates a directory junction on Windows
         subprocess.run(f'mklink /J "{target_folder}" "{root_folder}"', shell=True)
 
+
 def setup_worktree(name):
     if not os.path.exists(name):
-        print(f"📂 Creating worktree: {name}...")
+        print(f"ðŸ“‚ Creating worktree: {name}...")
         res = subprocess.run(f"git worktree add {name} -b autodna-{name}", shell=True)
         if res.returncode != 0:
-            print(f"❌ Error: Failed to create worktree '{name}'. Check git status (e.g., commit changes first).")
+            print(f"âŒ Error: Failed to create worktree '{name}'. Check git status (e.g., commit changes first).")
             sys.exit(1)
 
     # Share the environments to save RAM/Disk
     setup_junction(name, ".venv")
     setup_junction(name, "node_modules")
     setup_junction(name, "models") # Crucial for 2070 Super: share the heavy model files
+
 
 def launch_agent(name, mission, color="0A", headless=False):
     # Avoid quotes and newlines in the mission string
@@ -38,13 +56,25 @@ def launch_agent(name, mission, color="0A", headless=False):
 
     # We use -p (non-interactive) in headless mode to force the CLI to run the command and exit
     if headless:
-        print(f"🕵️  Launching {name} in background (headless)...")
+        print(f"ðŸ•µï¸  Launching {name} in background (headless)...")
         log_name = "manager.log" if name == "." else f"{name}.log"
         log_path = pathlib.Path.cwd() / "agent" / log_name
         log_file = open(str(log_path), "w", encoding="utf-8")
         # CREATE_NO_WINDOW = 0x08000000
         cmd_list = ["python", "-m", "autodna.core.agent_runner", name, full_mission]
-        subprocess.Popen(cmd_list, shell=False, cwd=name, stdout=log_file, stderr=subprocess.STDOUT, creationflags=0x08000000)
+        creation_flags = 0x08000000
+        platform_name = resolve_platform().strip().upper()
+        if platform_name in GEMINI_PLATFORMS:
+            # Allow console attachment for Gemini CLI when running headless.
+            creation_flags = 0
+        subprocess.Popen(
+            cmd_list,
+            shell=False,
+            cwd=name,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            creationflags=creation_flags,
+        )
         return log_path
     else:
         # Standard mode: Open interactive windows
@@ -53,13 +83,14 @@ def launch_agent(name, mission, color="0A", headless=False):
         subprocess.run(cmd, shell=True)
         return None
 
+
 def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
-    print("--- 🧬 AUTONOMOUS DNA ORCHESTRATOR ---")
+    print("--- ðŸ§¬ AUTONOMOUS DNA ORCHESTRATOR ---")
 
     if not os.path.exists(".git"):
-        print("❌ Error: Not a git repository. Please run `git init` and commit first.")
+        print("âŒ Error: Not a git repository. Please run `git init` and commit first.")
         sys.exit(1)
 
     headless = "--headless" in sys.argv
@@ -67,29 +98,29 @@ def main():
     # 1. Clean up stale locks
     if os.path.exists("agent/GPU.lock"):
         os.remove("agent/GPU.lock")
-        print("🔓 Cleared stale GPU lock.")
+        print("ðŸ”“ Cleared stale GPU lock.")
 
     # 2. Setup Worktrees & Junctions
     setup_worktree("worker-1")
     setup_worktree("worker-2")
 
     # 3. Launch Manager (Orchestrator)
-    print(f"🚀 Launching Manager {'(Headless)' if headless else '(Blue)'}...")
+    print(f"ðŸš€ Launching Manager {'(Headless)' if headless else '(Blue)'}...")
     log_m = launch_agent(".", "Manager Mode: You are the TPM. Run `autodna tasks list` to see tasks. Tell worker-1 or worker-2 to claim specific task IDs. Merge branches when done.", "0B", headless=headless)
 
     time.sleep(3)
 
     # 4. Launch Workers
-    print(f"🚀 Launching Worker 1 {'(Headless)' if headless else '(Green)'}...")
+    print(f"ðŸš€ Launching Worker 1 {'(Headless)' if headless else '(Green)'}...")
     log_1 = launch_agent("worker-1", "Worker-1: Run `autodna tasks list --status pending` to see your queue. Claim tasks via `autodna tasks claim <id> worker-1`. Complete via `autodna tasks complete <id>`. Stay in worker-1 folder.", "0A", headless=headless)
 
     time.sleep(3)
 
-    print(f"🚀 Launching Worker 2 {'(Headless)' if headless else '(Yellow)'}...")
+    print(f"ðŸš€ Launching Worker 2 {'(Headless)' if headless else '(Yellow)'}...")
     log_2 = launch_agent("worker-2", "Worker-2: Run `autodna tasks list --status pending` to see your queue. Claim tasks via `autodna tasks claim <id> worker-2`. Complete via `autodna tasks complete <id>`. Stay in worker-2 folder.", "0E", headless=headless)
 
     if headless:
-        print("\n✅ Autonomous DNA is running in background. Streaming logs below... (Press Ctrl+C to exit monitor loop)")
+        print("\nâœ… Autonomous DNA is running in background. Streaming logs below... (Press Ctrl+C to exit monitor loop)")
         print("--------------------------------------------------------------------------------")
 
         # Build file readers
@@ -109,9 +140,10 @@ def main():
                             print(f"[{agent_name}] {stripped}")
                 time.sleep(0.05)
         except KeyboardInterrupt:
-            print("\n🛑 Exiting live monitor. Autonomous DNA agents are still running in the background!")
+            print("\nðŸ›‘ Exiting live monitor. Autonomous DNA agents are still running in the background!")
     else:
-        print("\n✅ Autonomous DNA is running in interactive mode.")
+        print("\nâœ… Autonomous DNA is running in interactive mode.")
+
 
 if __name__ == "__main__":
     main()

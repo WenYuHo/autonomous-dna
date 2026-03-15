@@ -6,6 +6,7 @@ from pathlib import Path
 
 CODEX_PLATFORMS = {"CODEX", "CODEX_APP", "CODEX_DESKTOP", "CODEX_CLI", "OPENAI"}
 
+
 def _resolve_platform() -> str:
     env_platform = os.environ.get("AUTODNA_PLATFORM")
     if env_platform:
@@ -27,6 +28,22 @@ def _is_codex_platform(platform_name: str) -> bool:
     return platform_name.strip().upper() in CODEX_PLATFORMS
 
 
+def _build_models(is_codex: bool) -> list[str]:
+    # Models ordered by preference (below Gemini 3 per user request)
+    DEFAULT_GEMINI_MODELS = "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro,gemini-1.5-flash"
+    default_models = DEFAULT_GEMINI_MODELS
+    if is_codex:
+        default_models = os.environ.get("AUTODNA_CODEX_MODELS", "")
+    model_list_str = os.environ.get("AUTODNA_MODELS", default_models)
+    models = [m.strip() for m in model_list_str.split(",") if m.strip()]
+    if not models:
+        if is_codex:
+            models = [""]
+        else:
+            models = [m.strip() for m in DEFAULT_GEMINI_MODELS.split(",") if m.strip()]
+    return models
+
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: python agent_runner.py <agent_name> <mission_string>")
@@ -40,24 +57,12 @@ def main():
     platform_name = _resolve_platform()
     driver = get_driver(platform_name)
     is_codex = _is_codex_platform(platform_name)
-
-    # Models ordered by preference (below Gemini 3 per user request)
-    # Fallback Models (Configurable via environment variable)
-    DEFAULT_GEMINI_MODELS = "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro,gemini-1.5-flash"
-    default_models = DEFAULT_GEMINI_MODELS
-    if is_codex:
-        default_models = os.environ.get("AUTODNA_CODEX_MODELS", "")
-    model_list_str = os.environ.get("AUTODNA_MODELS", default_models)
-    models = [m.strip() for m in model_list_str.split(",") if m.strip()]
-    if not models:
-        if is_codex:
-            models = [""]
-        else:
-            models = [m.strip() for m in DEFAULT_GEMINI_MODELS.split(",") if m.strip()]
+    models = _build_models(is_codex)
 
     current_model_index: int = 0
     max_retries: int = 3
     retries: int = 0
+    codex_failed = False
 
     while current_model_index < len(models):
         model = models[current_model_index]
@@ -78,14 +83,23 @@ def main():
                 encoding="utf-8",
                 errors="replace"
             )
-        except FileNotFoundError:
-            print(f"[{agent_name}] CLI unavailable: {cmd_list[0]}.")
-            sys.exit(1)
-        except PermissionError:
-            print(f"[{agent_name}] Permission denied launching CLI: {cmd_list[0]}.")
-            sys.exit(1)
-        except OSError as exc:
-            print(f"[{agent_name}] Failed to launch CLI: {exc}.")
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            if is_codex and not codex_failed:
+                codex_failed = True
+                print(f"[{agent_name}] Codex CLI unavailable ({exc}). Falling back to Gemini.")
+                platform_name = "GEMINI"
+                driver = get_driver(platform_name)
+                is_codex = False
+                models = _build_models(is_codex)
+                current_model_index = 0
+                retries = 0
+                continue
+            if isinstance(exc, FileNotFoundError):
+                print(f"[{agent_name}] CLI unavailable: {cmd_list[0]}.")
+            elif isinstance(exc, PermissionError):
+                print(f"[{agent_name}] Permission denied launching CLI: {cmd_list[0]}.")
+            else:
+                print(f"[{agent_name}] Failed to launch CLI: {exc}.")
             sys.exit(1)
 
         quota_exhausted = False
