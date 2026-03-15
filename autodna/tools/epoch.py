@@ -13,6 +13,8 @@ EVAL_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
 RESEARCH_TIMEOUT_SECONDS = 300
 EVAL_TIMEOUT_SECONDS = 120
+TASKGEN_RETRIES = 1
+TASKGEN_TIMEOUT_SECONDS = 120
 IMPROVE_RETRIES = 1
 IMPROVE_TIMEOUT_SECONDS = 1800
 SELF_IMPROVE_RETRIES = 1
@@ -95,6 +97,11 @@ def main() -> None:
         action="store_true",
         help="Disable automatic self-improve step even if config is present",
     )
+    parser.add_argument(
+        "--no-taskgen",
+        action="store_true",
+        help="Disable automatic task generation step",
+    )
 
     args_to_parse = sys.argv[1:]
     if sys.argv and sys.argv[0].startswith("autodna"):
@@ -104,11 +111,14 @@ def main() -> None:
     config_path = Path(os.getenv("AUTODNA_SELF_IMPROVE_CONFIG", SELF_IMPROVE_CONFIG))
     self_improve_cfg = load_self_improve_config(config_path)
     self_improve_enabled = bool(self_improve_cfg and self_improve_cfg["enabled"] and not args.no_self_improve)
+    taskgen_enabled = not args.no_taskgen
 
     improve_args = parse_improve_args(args.improve_arg)
     improve_enabled = bool(args.improve or improve_args)
 
     total_steps = 4
+    if taskgen_enabled:
+        total_steps += 1
     if self_improve_enabled:
         total_steps += 1
     if improve_enabled:
@@ -137,6 +147,20 @@ def main() -> None:
     if not research_ok:
         print("[WARN] Research phase failed after retries. Continuing with existing memory fragments.")
     step += 1
+
+    if taskgen_enabled:
+        print(f"\n[{step}/{total_steps}] TASK GENERATION")
+        safe_flush()
+        taskgen_ok = run_with_retries(
+            [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"],
+            attempts=TASKGEN_RETRIES,
+            delay_seconds=RETRY_DELAY_SECONDS,
+            timeout_seconds=TASKGEN_TIMEOUT_SECONDS,
+            label="Task generation phase",
+        )
+        if not taskgen_ok:
+            print("[WARN] Task generation failed after retries.")
+        step += 1
 
     if self_improve_enabled:
         print(f"\n[{step}/{total_steps}] SELF-IMPROVEMENT")

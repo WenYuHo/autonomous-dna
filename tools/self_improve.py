@@ -79,6 +79,23 @@ def get_next_task() -> Optional[Dict[str, Any]]:
     logger.info("No pending tasks found.")
     return None
 
+
+def _run_taskgen_if_available() -> bool:
+    command = [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True)
+    except Exception as exc:
+        logger.warning(f"Task generation failed to launch: {exc}")
+        return False
+    if result.returncode != 0:
+        logger.warning("Task generation failed.")
+        if result.stdout:
+            logger.warning(result.stdout.strip()[-1000:])
+        if result.stderr:
+            logger.warning(result.stderr.strip()[-1000:])
+        return False
+    return True
+
 def branch_exists(branch_name: str) -> bool:
     refs = [f"refs/heads/{branch_name}", f"refs/remotes/origin/{branch_name}"]
     for ref in refs:
@@ -327,7 +344,11 @@ def main():
 
     task = get_next_task()
     if not task:
-        sys.exit(0)
+        logger.info("No actionable tasks found. Attempting task generation.")
+        if _run_taskgen_if_available():
+            task = get_next_task()
+        if not task:
+            sys.exit(0)
 
     assert task is not None # Tell type checker it's safe
 
