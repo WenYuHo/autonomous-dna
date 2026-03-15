@@ -25,13 +25,14 @@ DEFAULT_BASE_BRANCHES = ("dev", "main", "master")
 
 from typing import Any, Dict, Optional
 
-def require_clean_working_tree():
+def require_clean_working_tree() -> bool:
     """Ensure no uncommitted changes before starting."""
     result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
     if result.stdout.strip():
-        logger.error("Working tree is not clean. Commit or stash changes before running self-improve.")
+        logger.warning("Working tree is not clean. Skipping self-improve.")
         print(result.stdout)
-        sys.exit(1)
+        return False
+    return True
 
 def get_next_task() -> Optional[Dict[str, Any]]:
     """Find the first pending task in TASK_QUEUE.json."""
@@ -198,7 +199,8 @@ def main():
     logger.info("Starting Autonomous-DNA Self-Improvement Loop...")
 
     if not args.dry_run:
-        require_clean_working_tree()
+        if not require_clean_working_tree():
+            sys.exit(0)
 
     task = get_next_task()
     if not task:

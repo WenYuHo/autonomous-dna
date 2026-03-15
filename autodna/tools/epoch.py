@@ -34,6 +34,14 @@ def run_with_retries(command: list[str], attempts: int, delay_seconds: int, time
     return False
 
 
+def safe_flush() -> None:
+    try:
+        sys.stdout.flush()
+    except OSError:
+        # Some shells/CI runners can throw Invalid argument on flush after timeouts.
+        pass
+
+
 def parse_improve_args(cli_args: list[str]) -> list[str]:
     if cli_args:
         return cli_args
@@ -51,7 +59,7 @@ def load_self_improve_config(config_path: Path) -> dict | None:
     if not config_path.exists():
         return None
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
+        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         print(f"[WARN] Failed to read self-improve config {config_path}: {exc}")
         return None
@@ -113,7 +121,7 @@ def main() -> None:
     step = 1
     print(f"\n[{step}/{total_steps}] EVOLUTIONARY RESEARCH")
     print("Spawning agent to discover latest AI coding agent best practices...")
-    sys.stdout.flush()
+    safe_flush()
     research_ok = run_with_retries(
         [
             sys.executable,
@@ -133,7 +141,7 @@ def main() -> None:
     if self_improve_enabled:
         print(f"\n[{step}/{total_steps}] SELF-IMPROVEMENT")
         print(f"Running self-improve command from {self_improve_cfg['path']}")
-        sys.stdout.flush()
+        safe_flush()
         command = parse_command(self_improve_cfg["command"])
         self_ok = run_with_retries(
             command,
@@ -148,7 +156,7 @@ def main() -> None:
 
     if improve_enabled:
         print(f"\n[{step}/{total_steps}] IMPROVEMENT")
-        sys.stdout.flush()
+        safe_flush()
         if not improve_args:
             print("[WARN] Improve step enabled but no args provided. Skipping.")
         else:
@@ -164,7 +172,7 @@ def main() -> None:
         step += 1
 
     print(f"\n[{step}/{total_steps}] DEFRAGMENTATION & EVALUATION")
-    sys.stdout.flush()
+    safe_flush()
     eval_ok = run_with_retries(
         [sys.executable, "autodna/cli.py", "eval"],
         attempts=EVAL_RETRIES,
