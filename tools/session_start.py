@@ -8,8 +8,6 @@ Output is designed to be read by the agent — structured for LLM consumption.
 
 from pathlib import Path
 from datetime import datetime, timezone
-import sys
-import subprocess
 
 # Fix Windows cp1252 charmap encoding for console emojis
 # This block is moved inside main() as per the instruction's implied structure.
@@ -109,13 +107,13 @@ def main() -> None:
         "context management":         "skills/context/SKILL.md",
     }
     for label, path in skills.items():
-        exists = "✓" if (root / path).exists() else "✗ MISSING"
-        print(f"  {exists}  {label:35s} → {path}")
+        exists = "[OK]" if (root / path).exists() else "[XX]"
+        print(f"  {exists}  {label:35s} -> {path}")
 
     print("\n--- HARD RULES REMINDER ---")
     print("NEVER edit scaffold files. NEVER mark done if tests fail.")
     print("NEVER force-push to main/master/develop.")
-    print("IF context degraded → re-run this script.")
+    print("IF context degraded -> re-run this script.")
     print("=" * 60)
     print("Ready. Pick the highest-priority unreserved task and begin.")
     print("=" * 60)
