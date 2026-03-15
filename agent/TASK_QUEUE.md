@@ -29,13 +29,13 @@
     - Reserved: Antigravity @ 2026-03-15T01:41:53Z
     - Done: 2026-03-15T01:42:30Z
 
-- [ ] PLATFORM_CONFIGS: Add missing platform config files.
+- [x] PLATFORM_CONFIGS: Add missing platform config files.
     - Detail: Create `.antigravity/rules.md`, `.codex/config.toml` with sensible defaults. These are flagged missing by bridge.py validation.
     - Priority: MED
     - BlockedBy: NONE
     - Promise: PLATFORM_CONFIGS_PRESENT
     - Reserved: Antigravity @ 2026-03-15T01:45:14Z
-    - Done: NONE
+    - Done: 2026-03-15T01:45:34Z
 
 - [ ] ERROR_HANDLING: Improve CLI error handling and user messaging.
     - Detail: `autodna start` should check if git is initialized, if worktrees exist before creating, and print actionable errors. `cli.py` should catch ImportError if tools are broken.
