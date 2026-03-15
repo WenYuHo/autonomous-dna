@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import subprocess
+import shutil
 import sys
 import time
 import re
@@ -164,12 +165,31 @@ def _summarize_swarm_failure(output: str) -> Optional[str]:
         return None
     if "ModelNotFoundError" in output or "Requested entity was not found" in output:
         return "Gemini model not found. Update AUTODNA_MODELS or Gemini CLI config."
+    if "CLI unavailable:" in output:
+        return "CLI unavailable. Install the CLI or set AUTODNA_CODEX_CMD."
+    if "Permission denied launching CLI" in output or "Access is denied" in output:
+        return "CLI permission denied. Fix executable permissions or security policy."
+    if "Failed to launch CLI:" in output:
+        return "CLI failed to launch. Verify the CLI path and permissions."
     match = re.search(r"exhausted your capacity on this model.*?reset after ([^\\.\\n]+)", output, re.IGNORECASE)
     if match:
         return f"Gemini quota exhausted. Reset after {match.group(1).strip()}."
     if "QUOTA_EXHAUSTED" in output:
         return "Gemini quota exhausted."
     return None
+
+
+def _detect_codex_env() -> bool:
+    if os.environ.get("CODEX_SHELL") == "1":
+        return True
+    origin = os.environ.get("CODEX_INTERNAL_ORIGINATOR", "")
+    if origin and "codex" in origin.lower():
+        return True
+    if os.environ.get("CODEX_THREAD_ID"):
+        return True
+    if shutil.which("codex"):
+        return True
+    return False
 
 
 def _scan_swarm_log(log_path: Path, offset: int) -> tuple[int, Optional[str]]:
@@ -190,6 +210,12 @@ def _scan_swarm_log(log_path: Path, offset: int) -> tuple[int, Optional[str]]:
         return new_offset, "Gemini CLI console attach failed."
     if "All fallback models exhausted. Cannot continue." in chunk:
         return new_offset, "All configured Gemini models exhausted or unavailable."
+    if "CLI unavailable:" in chunk:
+        return new_offset, "CLI unavailable. Install the CLI or set AUTODNA_CODEX_CMD."
+    if "Permission denied launching CLI" in chunk or "Access is denied" in chunk:
+        return new_offset, "CLI permission denied. Fix executable permissions."
+    if "Failed to launch CLI:" in chunk:
+        return new_offset, "CLI failed to launch. Verify the CLI path and permissions."
     return new_offset, None
 
 
@@ -225,11 +251,16 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
         # Pass the task ID so the swarm prioritizes it, and run headlessly
         # We also need to set platform/ACTIVE if autodna cli expects it,
         # but starting autodna CLI via python module is safest cross-platform option
+        env = os.environ.copy()
+        if "AUTODNA_PLATFORM" not in env and _detect_codex_env():
+            env["AUTODNA_PLATFORM"] = "CODEX"
+
         process = subprocess.Popen(
             ["python", "-m", "autodna.cli", "start", "--headless"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            env=env
         )
 
         start_time = time.time()
@@ -257,6 +288,18 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
                     logger.error("All configured Gemini models exhausted or unavailable.")
                     process.terminate()
                     return "blocked", "All configured Gemini models exhausted or unavailable."
+                if "CLI unavailable:" in line:
+                    logger.error("CLI unavailable.")
+                    process.terminate()
+                    return "blocked", "CLI unavailable. Install the CLI or set AUTODNA_CODEX_CMD."
+                if "Permission denied launching CLI" in line or "Access is denied" in line:
+                    logger.error("CLI permission denied.")
+                    process.terminate()
+                    return "blocked", "CLI permission denied. Fix executable permissions."
+                if "Failed to launch CLI:" in line:
+                    logger.error("CLI failed to launch.")
+                    process.terminate()
+                    return "blocked", "CLI failed to launch. Verify the CLI path and permissions."
 
             # Check if process ended naturally
             retcode = process.poll()

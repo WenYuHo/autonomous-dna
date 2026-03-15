@@ -1,7 +1,31 @@
-import sys
+﻿import sys
 import subprocess
 import time
 import os
+from pathlib import Path
+
+CODEX_PLATFORMS = {"CODEX", "CODEX_APP", "CODEX_DESKTOP", "CODEX_CLI", "OPENAI"}
+
+def _resolve_platform() -> str:
+    env_platform = os.environ.get("AUTODNA_PLATFORM")
+    if env_platform:
+        return env_platform
+    if os.environ.get("CODEX_SHELL") == "1":
+        return "CODEX"
+    origin = os.environ.get("CODEX_INTERNAL_ORIGINATOR", "")
+    if origin and "CODEX" in origin.upper():
+        return "CODEX"
+    platform_file = Path("platform/ACTIVE")
+    if platform_file.exists():
+        content = platform_file.read_text().strip()
+        if content:
+            return content
+    return "GEMINI"
+
+
+def _is_codex_platform(platform_name: str) -> bool:
+    return platform_name.strip().upper() in CODEX_PLATFORMS
+
 
 def main():
     if len(sys.argv) < 3:
@@ -11,11 +35,25 @@ def main():
     agent_name = sys.argv[1]
     mission = sys.argv[2]
 
+    from autodna.core.cli_driver import get_driver
+
+    platform_name = _resolve_platform()
+    driver = get_driver(platform_name)
+    is_codex = _is_codex_platform(platform_name)
+
     # Models ordered by preference (below Gemini 3 per user request)
     # Fallback Models (Configurable via environment variable)
-    DEFAULT_MODELS = "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro,gemini-1.5-flash"
-    MODEL_LIST_STR = os.environ.get("AUTODNA_MODELS", DEFAULT_MODELS)
-    models = [m.strip() for m in MODEL_LIST_STR.split(",") if m.strip()]
+    DEFAULT_GEMINI_MODELS = "gemini-2.5-pro,gemini-2.5-flash,gemini-1.5-pro,gemini-1.5-flash"
+    default_models = DEFAULT_GEMINI_MODELS
+    if is_codex:
+        default_models = os.environ.get("AUTODNA_CODEX_MODELS", "")
+    model_list_str = os.environ.get("AUTODNA_MODELS", default_models)
+    models = [m.strip() for m in model_list_str.split(",") if m.strip()]
+    if not models:
+        if is_codex:
+            models = [""]
+        else:
+            models = [m.strip() for m in DEFAULT_GEMINI_MODELS.split(",") if m.strip()]
 
     current_model_index: int = 0
     max_retries: int = 3
@@ -23,29 +61,32 @@ def main():
 
     while current_model_index < len(models):
         model = models[current_model_index]
-        print(f"[{agent_name}] 🔄 Starting agent with model: {model} (Attempt {retries + 1})")
-
-        from autodna.core.cli_driver import get_driver
-        from pathlib import Path
-
-        # Determine Platform to instatiate the correct Driver
-        platform_file = Path("platform/ACTIVE")
-        platform_name = platform_file.read_text().strip() if platform_file.exists() else "GEMINI"
-        driver = get_driver(platform_name)
+        model_label = model if model else "default"
+        print(f"[{agent_name}] Starting agent with model: {model_label} (Attempt {retries + 1})")
 
         # Build command dynamically
         cmd_list = driver.get_command(model, mission)
 
         # We read stdout and stderr via PIPE so we can parse it for errors AND echo it.
         # This prevents UnicodeEncodeError issues when printing characters the terminal can't handle natively.
-        process = subprocess.Popen(
-            cmd_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, # Merge stderr into stdout
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
+        try:
+            process = subprocess.Popen(
+                cmd_list,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, # Merge stderr into stdout
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+        except FileNotFoundError:
+            print(f"[{agent_name}] CLI unavailable: {cmd_list[0]}.")
+            sys.exit(1)
+        except PermissionError:
+            print(f"[{agent_name}] Permission denied launching CLI: {cmd_list[0]}.")
+            sys.exit(1)
+        except OSError as exc:
+            print(f"[{agent_name}] Failed to launch CLI: {exc}.")
+            sys.exit(1)
 
         quota_exhausted = False
         model_unavailable = False
@@ -81,34 +122,36 @@ def main():
 
         if quota_exhausted:
             if model_unavailable:
-                print(f"[{agent_name}] Model unavailable: {model}.")
+                print(f"[{agent_name}] Model unavailable: {model_label}.")
             else:
-                print(f"[{agent_name}] Quota exhausted for model {model}.")
+                print(f"[{agent_name}] Quota exhausted for model {model_label}.")
             current_model_index += 1
             retries = 0
             if current_model_index < len(models):
-                print(f"[{agent_name}] 🔄 Switching to fallback model: {models[current_model_index]}")
+                next_label = models[current_model_index] if models[current_model_index] else "default"
+                print(f"[{agent_name}] Switching to fallback model: {next_label}")
                 time.sleep(2) # Brief cooldown before rapid-reboot
             else:
-                print(f"[{agent_name}] ❌ All fallback models exhausted. Cannot continue.")
+                print(f"[{agent_name}] All fallback models exhausted. Cannot continue.")
                 break
         else:
             # If the process exited for a reason *other* than quota (e.g. fatal code bug, user abort)
             exit_code = process.returncode
             if exit_code == 0:
-                print(f"[{agent_name}] ✅ Agent exited cleanly.")
+                print(f"[{agent_name}] Agent exited cleanly.")
                 break
             else:
-                print(f"[{agent_name}] ❌ Agent crashed with code {exit_code}. Retrying...")
+                print(f"[{agent_name}] Agent crashed with code {exit_code}. Retrying...")
                 retries += 1
                 if retries >= max_retries:
-                    print(f"[{agent_name}] ❌ Max retries reached for model {model}. Switching model.")
+                    print(f"[{agent_name}] Max retries reached for model {model_label}. Switching model.")
                     current_model_index += 1
                     retries = 0
                 time.sleep(3)
 
+
 if __name__ == "__main__":
     # Configure stdout to handle utf-8 safely regardless of terminal env (if supported)
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     main()

@@ -9,6 +9,7 @@ from autodna.core.cli_driver import (
     GeminiDriver,
     ClaudeDriver,
     AiderDriver,
+    CodexDriver,
     BaseDriver,
 )
 
@@ -31,6 +32,10 @@ class TestGetDriver(unittest.TestCase):
     def test_aider_platform(self):
         driver = get_driver("AIDER")
         self.assertIsInstance(driver, AiderDriver)
+
+    def test_codex_platform(self):
+        driver = get_driver("CODEX")
+        self.assertIsInstance(driver, CodexDriver)
 
     def test_case_insensitive(self):
         driver = get_driver("claude_code")
@@ -118,6 +123,28 @@ class TestAiderDriver(unittest.TestCase):
         # Must have BOTH "429" and "rate limit" to trigger
         self.assertFalse(self.driver.is_quota_exhausted("429 server error"))
         self.assertFalse(self.driver.is_quota_exhausted("rate limit warning"))
+
+
+class TestCodexDriver(unittest.TestCase):
+    """Tests for CodexDriver."""
+
+    def setUp(self):
+        self.driver = CodexDriver()
+
+    def test_get_command_structure(self):
+        cmd = self.driver.get_command("gpt-5", "Do the thing")
+        self.assertEqual(cmd[0], "codex")
+        self.assertIn("--prompt", cmd)
+        self.assertIn("Do the thing", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("gpt-5", cmd)
+
+    def test_quota_exhausted_positive(self):
+        self.assertTrue(self.driver.is_quota_exhausted("rate limit exceeded"))
+        self.assertTrue(self.driver.is_quota_exhausted("quota exceeded"))
+
+    def test_quota_exhausted_negative(self):
+        self.assertFalse(self.driver.is_quota_exhausted("everything is fine"))
 
 
 class TestBaseDriver(unittest.TestCase):
