@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import re
 from pathlib import Path
 
 # Setup basic logging
@@ -34,19 +35,44 @@ def require_clean_working_tree() -> bool:
         return False
     return True
 
-def get_next_task() -> Optional[Dict[str, Any]]:
-    """Find the first pending task in TASK_QUEUE.json."""
+def _load_tasks() -> list[Dict[str, Any]]:
     if not TASK_QUEUE_FILE.exists():
         logger.info(f"{TASK_QUEUE_FILE} not found. No pending tasks to run.")
-        return None
-
+        return []
     with open(TASK_QUEUE_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
+    return data.get("tasks", [])
 
-    for task in data.get("tasks", []):
-        if task.get("status") == "pending":
-            logger.info(f"Found pending task: {task['id']} - {task['title']}")
-            return task
+
+def _task_by_id(tasks: list[Dict[str, Any]]) -> dict[int, Dict[str, Any]]:
+    return {t.get("id"): t for t in tasks if isinstance(t.get("id"), int)}
+
+
+def _is_blocked(task: Dict[str, Any], by_id: dict[int, Dict[str, Any]]) -> bool:
+    blocked_by = task.get("blocked_by")
+    if blocked_by is None:
+        return False
+    blocker = by_id.get(blocked_by)
+    if not blocker:
+        return False
+    return blocker.get("status") not in ("done", "info")
+
+
+def get_next_task() -> Optional[Dict[str, Any]]:
+    """Find the first pending task in TASK_QUEUE.json."""
+    tasks = _load_tasks()
+    by_id = _task_by_id(tasks)
+
+    for task in tasks:
+        status = task.get("status")
+        if status != "pending":
+            continue
+        if task.get("title", "").strip().upper().startswith("CYCLE"):
+            continue
+        if _is_blocked(task, by_id):
+            continue
+        logger.info(f"Found pending task: {task['id']} - {task['title']}")
+        return task
 
     logger.info("No pending tasks found.")
     return None
@@ -73,6 +99,8 @@ def resolve_base_branch(preferred: Optional[str]) -> str:
 
 def update_task_status(task_id: int, new_status: str, notes: Optional[str] = None) -> None:
     """Update task status in TASK_QUEUE.json to prevent infinite loops."""
+    if not TASK_QUEUE_FILE.exists():
+        return
     with open(TASK_QUEUE_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -81,6 +109,7 @@ def update_task_status(task_id: int, new_status: str, notes: Optional[str] = Non
             task["status"] = new_status
             if notes:
                 task["notes"] = notes
+            task["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             break
 
     with open(TASK_QUEUE_FILE, "w", encoding="utf-8") as f:
@@ -109,9 +138,30 @@ def run_tests() -> bool:
     else:
         logger.error(f"Tests failed (exit code {result.returncode})")
         logger.error(result.stdout[-1000:]) # Show last 1000 chars of output
-        return False
+    return False
 
-def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> bool:
+def _summarize_swarm_failure(output: str) -> Optional[str]:
+    if not output:
+        return None
+    if "ModelNotFoundError" in output or "Requested entity was not found" in output:
+        return "Gemini model not found. Update AUTODNA_MODELS or Gemini CLI config."
+    match = re.search(r"exhausted your capacity on this model.*?reset after ([^\\.\\n]+)", output, re.IGNORECASE)
+    if match:
+        return f"Gemini quota exhausted. Reset after {match.group(1).strip()}."
+    if "QUOTA_EXHAUSTED" in output:
+        return "Gemini quota exhausted."
+    return None
+
+
+def _get_task_status(task_id: int) -> tuple[Optional[str], Optional[str]]:
+    tasks = _load_tasks()
+    for task in tasks:
+        if task.get("id") == task_id:
+            return task.get("status"), task.get("notes")
+    return None, None
+
+
+def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[str]]:
     """Spawn the agent swarm and wait for it to finish."""
     logger.info(f"Spawning swarm for task {task['id']} (timeout: {timeout_seconds}s)...")
 
@@ -134,20 +184,22 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> bool:
             if retcode is not None:
                 if retcode == 0:
                     logger.info("Swarm completed normally.")
-                    return True
-                else:
-                    logger.error(f"Swarm exited with error code {retcode}")
-                    # Output the logs to help debug
-                    out, _ = process.communicate()
-                    print(out[-2000:] if out else "No output.")
-                    return False
+                    return "done", None
+                logger.error(f"Swarm exited with error code {retcode}")
+                # Output the logs to help debug
+                out, _ = process.communicate()
+                print(out[-2000:] if out else "No output.")
+                summary = _summarize_swarm_failure(out or "")
+                if summary:
+                    return "blocked", summary
+                return "error", None
 
             # Check timeout
             if time.time() - start_time > timeout_seconds:
                 logger.error(f"Swarm timed out after {timeout_seconds} seconds. Terminating.")
                 process.terminate()
                 process.wait(timeout=5)
-                return False
+                return "error", "Swarm timed out."
 
             # Wait a bit before checking again
             time.sleep(5)
@@ -161,15 +213,15 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> bool:
                         if t.get("status") == "done":
                             logger.info("Task marked 'done' in queue! Terminating swarm.")
                             process.terminate()
-                            return True
+                            return "done", None
                         elif t.get("status") in ["error", "blocked"]:
                             logger.error(f"Task marked '{t.get('status')}' in queue.")
                             process.terminate()
-                            return False
+                            return t.get("status"), t.get("notes")
 
     except Exception as e:
         logger.error(f"Error orchestrating swarm: {e}")
-        return False
+        return "error", f"Swarm orchestration error: {e}"
 
 def commit_changes(task: Dict[str, Any]) -> None:
     """Commit changes to the current branch."""
@@ -221,9 +273,9 @@ def main():
     try:
         checkout_branch(branch_name, base_branch)
 
-        success = run_swarm(task)
+        swarm_status, swarm_note = run_swarm(task)
 
-        if success:
+        if swarm_status == "done":
             tests_passed = run_tests()
             if tests_passed:
                 commit_changes(task)
@@ -236,7 +288,12 @@ def main():
         else:
             logger.error("Swarm failed to complete task.")
             rollback_changes()
-            update_task_status(task["id"], "error", "Swarm exited with error or timeout.")
+            current_status, current_notes = _get_task_status(task["id"])
+            if swarm_status == "blocked":
+                if current_status != "blocked":
+                    update_task_status(task["id"], "blocked", swarm_note or current_notes)
+            else:
+                update_task_status(task["id"], "error", swarm_note or current_notes or "Swarm exited with error.")
 
         subprocess.run(["git", "checkout", base_branch], check=True)
 
