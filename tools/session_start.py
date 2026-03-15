@@ -75,6 +75,26 @@ def main() -> None:
     else:
         print("\nWARN: agent/MEMORY.md not found. Run bridge.py to initialise.")
 
+    # --- Last session trace ---
+    try:
+        import importlib.util
+        tl_path = root / "tools" / "trace_logger.py"
+        spec = importlib.util.spec_from_file_location("trace_logger", tl_path)
+        tl = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tl)
+        latest = tl.get_latest_trace_file()
+        if latest:
+            entries = tl.read_trace()
+            if entries:
+                print("\n--- LAST SESSION ---")
+                print(tl.format_summary(entries))
+        # Start a new trace session
+        sid = tl.new_session(platform.lower() if platform != "UNKNOWN" else "unknown")
+        print(f"\n--- NEW SESSION: {sid} ---")
+    except Exception:
+        # Tracing is optional — don't block session start
+        print("\n--- TRACING: not available (run from project root) ---")
+
     # --- Skill index reminder ---
     print("\n--- SKILL INDEX (load on demand only) ---")
     skills = {
