@@ -184,6 +184,8 @@ def _summarize_swarm_failure(output: str) -> Optional[str]:
         return None
     if "ModelNotFoundError" in output or "Requested entity was not found" in output:
         return "Gemini model not found. Update AUTODNA_MODELS or Gemini CLI config."
+    if "TerminalQuotaError" in output:
+        return "Gemini quota exhausted."
     if "CLI unavailable:" in output:
         return "CLI unavailable. Install the CLI or set AUTODNA_CODEX_CMD."
     if "Permission denied launching CLI" in output or "Access is denied" in output:
@@ -229,6 +231,10 @@ def _scan_swarm_log(log_path: Path, offset: int) -> tuple[int, Optional[str]]:
         return new_offset, "Gemini CLI console attach failed."
     if "All fallback models exhausted. Cannot continue." in chunk:
         return new_offset, "All configured Gemini models exhausted or unavailable."
+    if "TerminalQuotaError" in chunk or "QUOTA_EXHAUSTED" in chunk:
+        return new_offset, "Gemini quota exhausted."
+    if "ModelNotFoundError" in chunk or "Requested entity was not found" in chunk:
+        return new_offset, "Gemini model not found. Update AUTODNA_MODELS or Gemini CLI config."
     if "CLI unavailable:" in chunk:
         return new_offset, "CLI unavailable. Install the CLI or set AUTODNA_CODEX_CMD."
     if "Permission denied launching CLI" in chunk or "Access is denied" in chunk:
@@ -307,6 +313,14 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
                     logger.error("All configured Gemini models exhausted or unavailable.")
                     process.terminate()
                     return "blocked", "All configured Gemini models exhausted or unavailable."
+                if "TerminalQuotaError" in line or "QUOTA_EXHAUSTED" in line:
+                    logger.error("Gemini quota exhausted.")
+                    process.terminate()
+                    return "blocked", "Gemini quota exhausted."
+                if "ModelNotFoundError" in line or "Requested entity was not found" in line:
+                    logger.error("Gemini model not found.")
+                    process.terminate()
+                    return "blocked", "Gemini model not found. Update AUTODNA_MODELS or Gemini CLI config."
                 if "CLI unavailable:" in line:
                     logger.error("CLI unavailable.")
                     process.terminate()
