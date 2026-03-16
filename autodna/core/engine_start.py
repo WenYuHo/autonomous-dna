@@ -70,6 +70,7 @@ def setup_worktree(name):
     setup_junction(name, ".venv")
     setup_junction(name, "node_modules")
     setup_junction(name, "models") # Crucial for 2070 Super: share the heavy model files
+    setup_junction(name, "agent")  # Share TASK_QUEUE/MEMORY/traces across worktrees
 
 
 def _task_cli_hint() -> str:

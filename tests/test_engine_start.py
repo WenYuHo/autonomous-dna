@@ -58,12 +58,13 @@ class TestEngineStart(unittest.TestCase):
                 shell=False,
             )
 
-            # Should setup 3 junctions
-            self.assertEqual(mock_junction.call_count, 3)
+            # Should setup 4 junctions
+            self.assertEqual(mock_junction.call_count, 4)
             calls = mock_junction.call_args_list
             self.assertEqual(calls[0][0], ("worker-3", ".venv"))
             self.assertEqual(calls[1][0], ("worker-3", "node_modules"))
             self.assertEqual(calls[2][0], ("worker-3", "models"))
+            self.assertEqual(calls[3][0], ("worker-3", "agent"))
 
     @patch("subprocess.run")
     @patch("pathlib.Path.exists")
