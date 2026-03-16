@@ -8,6 +8,8 @@ import shlex
 import json
 from pathlib import Path
 
+from autodna.tools.io_utils import read_text_fallback
+
 RESEARCH_RETRIES = 2
 EVAL_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
@@ -22,14 +24,54 @@ SELF_IMPROVE_TIMEOUT_SECONDS = 3600
 SELF_IMPROVE_CONFIG = "self_improve.json"
 
 
+def _normalize_memory_file(memory_path: Path) -> bool:
+    if not memory_path.exists():
+        return False
+    try:
+        memory_path.read_text(encoding="utf-8")
+        return True
+    except UnicodeDecodeError:
+        content = read_text_fallback(memory_path)
+        memory_path.write_text(content, encoding="utf-8")
+        print("[AUTO-FIX] Normalized agent/MEMORY.md to UTF-8.")
+        return True
+    except Exception as exc:
+        print(f"[WARN] Failed to normalize agent/MEMORY.md: {exc}")
+        return False
+
+
+def _should_fix_memory_encoding(output: str) -> bool:
+    lowered = output.lower()
+    return "unicodedecodeerror" in lowered and "memory.md" in lowered
+
+
 def run_with_retries(command: list[str], attempts: int, delay_seconds: int, timeout_seconds: int, label: str) -> bool:
     for attempt in range(1, attempts + 1):
         try:
-            subprocess.run(command, check=True, timeout=timeout_seconds)
-            return True
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+            if result.stdout:
+                print(result.stdout, end="")
+            if result.stderr:
+                print(result.stderr, end="")
+            if result.returncode == 0:
+                return True
+            output = (result.stdout or "") + (result.stderr or "")
+            if _should_fix_memory_encoding(output):
+                fixed = _normalize_memory_file(Path("agent/MEMORY.md"))
+                if fixed:
+                    continue
         except subprocess.TimeoutExpired:
             print(f"[WARN] {label} timed out (attempt {attempt}/{attempts}).")
         except subprocess.CalledProcessError:
+            print(f"[WARN] {label} failed (attempt {attempt}/{attempts}).")
+        else:
             print(f"[WARN] {label} failed (attempt {attempt}/{attempts}).")
         if attempt < attempts and delay_seconds > 0:
             time.sleep(delay_seconds)
