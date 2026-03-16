@@ -5,8 +5,10 @@ allowing the agent runner to be completely agnostic to the underlying LLM platfo
 """
 
 from typing import List
+from pathlib import Path
 import os
 import shlex
+import shutil
 
 class BaseDriver:
     def get_command(self, model: str, mission: str) -> List[str]:
@@ -60,16 +62,28 @@ class AiderDriver(BaseDriver):
 class CodexDriver(BaseDriver):
     def get_command(self, model: str, mission: str) -> List[str]:
         cmd = os.environ.get("AUTODNA_CODEX_CMD", "codex")
-        prompt_flag = os.environ.get("AUTODNA_CODEX_PROMPT_FLAG", "--prompt")
+        if os.name == "nt" and cmd.lower() == "codex":
+            for candidate in ("codex.cmd", "codex.exe", "codex"):
+                resolved = shutil.which(candidate)
+                if resolved:
+                    cmd = resolved
+                    break
+        prompt_flag = os.environ.get("AUTODNA_CODEX_PROMPT_FLAG")
         model_flag = os.environ.get("AUTODNA_CODEX_MODEL_FLAG", "--model")
         extra_args = os.environ.get("AUTODNA_CODEX_EXTRA_ARGS", "")
 
-        cmd_parts = shlex.split(cmd, posix=(os.name != "nt"))
-        command = cmd_parts + [prompt_flag, mission]
+        if Path(cmd).exists():
+            cmd_parts = [cmd]
+        else:
+            cmd_parts = shlex.split(cmd, posix=(os.name != "nt"))
+        extra_parts = shlex.split(extra_args, posix=(os.name != "nt")) if extra_args else []
+        command = cmd_parts + extra_parts
         if model:
             command += [model_flag, model]
-        if extra_args:
-            command += shlex.split(extra_args, posix=(os.name != "nt"))
+        if prompt_flag:
+            command += [prompt_flag, mission]
+        else:
+            command += [mission]
         return command
 
     def is_quota_exhausted(self, line: str) -> bool:

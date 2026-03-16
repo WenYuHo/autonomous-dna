@@ -3,6 +3,7 @@ tests/test_cli_driver.py
 Unit tests for autodna/core/cli_driver.py — multi-platform CLI driver abstraction.
 """
 
+import os
 import unittest
 from autodna.core.cli_driver import (
     get_driver,
@@ -133,8 +134,8 @@ class TestCodexDriver(unittest.TestCase):
 
     def test_get_command_structure(self):
         cmd = self.driver.get_command("gpt-5", "Do the thing")
-        self.assertEqual(cmd[0], "codex")
-        self.assertIn("--prompt", cmd)
+        cmd_name = os.path.basename(cmd[0]).lower()
+        self.assertIn(cmd_name, {"codex", "codex.cmd", "codex.exe"})
         self.assertIn("Do the thing", cmd)
         self.assertIn("--model", cmd)
         self.assertIn("gpt-5", cmd)
