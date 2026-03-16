@@ -112,6 +112,27 @@ def get_retry_task() -> Optional[Dict[str, Any]]:
     return None
 
 
+def select_next_task(always_taskgen: bool) -> Optional[Dict[str, Any]]:
+    if always_taskgen:
+        _run_taskgen_if_available()
+
+    task = get_next_task()
+    if task:
+        return task
+
+    retry_task = get_retry_task()
+    if retry_task:
+        update_task_status(retry_task["id"], "pending", "Auto-retry after error.")
+        return retry_task
+
+    if not always_taskgen:
+        logger.info("No actionable tasks found. Attempting task generation.")
+        if _run_taskgen_if_available():
+            return get_next_task()
+
+    return None
+
+
 def _run_taskgen_if_available() -> bool:
     command = [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"]
     try:
@@ -439,24 +460,20 @@ def main():
     loop_enabled = args.loop or os.getenv("AUTODNA_SELF_IMPROVE_LOOP", "").lower() in {"1", "true", "yes"}
     max_cycles = max(1, args.max_cycles)
 
+    always_taskgen = os.getenv("AUTODNA_SELF_IMPROVE_ALWAYS_TASKGEN", "1").lower() in {"1", "true", "yes"}
     cycles = 0
     while True:
         if not args.dry_run:
             if not require_clean_working_tree():
                 sys.exit(0)
 
-        task = get_next_task()
+        task = select_next_task(always_taskgen)
         if not task:
-            retry_task = get_retry_task()
-            if retry_task:
-                update_task_status(retry_task["id"], "pending", "Auto-retry after error.")
-                task = retry_task
-            else:
-                logger.info("No actionable tasks found. Attempting task generation.")
-                if _run_taskgen_if_available():
-                    task = get_next_task()
-                if not task:
-                    break
+            cycles += 1
+            if not loop_enabled or cycles >= max_cycles:
+                break
+            logger.info("No tasks found after task generation. Restarting loop from the top.")
+            continue
 
         assert task is not None # Tell type checker it's safe
 

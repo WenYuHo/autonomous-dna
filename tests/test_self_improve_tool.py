@@ -57,3 +57,19 @@ def test_get_retry_task_skips_blocked(tmp_path, monkeypatch):
     task = self_improve.get_retry_task()
     assert task is not None
     assert task["id"] == 1
+
+
+def test_select_next_task_runs_taskgen(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_taskgen():
+        calls["count"] += 1
+        return True
+
+    monkeypatch.setattr(self_improve, "_run_taskgen_if_available", fake_taskgen)
+    monkeypatch.setattr(self_improve, "get_next_task", lambda: None)
+    monkeypatch.setattr(self_improve, "get_retry_task", lambda: None)
+
+    task = self_improve.select_next_task(always_taskgen=True)
+    assert task is None
+    assert calls["count"] == 1
