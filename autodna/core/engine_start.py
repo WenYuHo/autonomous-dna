@@ -24,10 +24,13 @@ def run(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 
-def setup_junction(target_dir, folder_name):
+def setup_junction(target_dir, folder_name, force=False):
     """Creates a Windows Junction to share the environment."""
     root_folder = os.path.join(os.getcwd(), folder_name)
     target_folder = os.path.join(target_dir, folder_name)
+
+    if force and os.path.exists(target_folder):
+        shutil.rmtree(target_folder, ignore_errors=True)
 
     if os.path.exists(root_folder) and not os.path.exists(target_folder):
         print(f"ðŸ”— Linking {folder_name} to {target_dir}...")
@@ -70,7 +73,7 @@ def setup_worktree(name):
     setup_junction(name, ".venv")
     setup_junction(name, "node_modules")
     setup_junction(name, "models") # Crucial for 2070 Super: share the heavy model files
-    setup_junction(name, "agent")  # Share TASK_QUEUE/MEMORY/traces across worktrees
+    setup_junction(name, "agent", force=True)  # Share TASK_QUEUE/MEMORY/traces across worktrees
 
 
 def _task_cli_hint() -> str:

@@ -65,6 +65,7 @@ class TestEngineStart(unittest.TestCase):
             self.assertEqual(calls[1][0], ("worker-3", "node_modules"))
             self.assertEqual(calls[2][0], ("worker-3", "models"))
             self.assertEqual(calls[3][0], ("worker-3", "agent"))
+            self.assertEqual(calls[3][1], {"force": True})
 
     @patch("subprocess.run")
     @patch("pathlib.Path.exists")
