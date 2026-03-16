@@ -4,6 +4,8 @@ import datetime
 import re
 from pathlib import Path
 
+from autodna.tools.io_utils import read_text_fallback
+
 def parse_iso_timestamp(value: str):
     try:
         cleaned = value.strip()
@@ -75,7 +77,7 @@ def consolidate_memory(dry_run=False, max_facts=100, prune=False, archive_path=P
     if not memory_path.exists():
         return
 
-    content = memory_path.read_text(encoding="utf-8")
+    content = read_text_fallback(memory_path)
     lines = content.splitlines()
     header_lines = []
     facts = []

@@ -3,6 +3,8 @@ import argparse
 import urllib.parse
 import time
 from pathlib import Path
+
+from autodna.tools.io_utils import read_text_fallback
 from playwright.sync_api import sync_playwright
 
 TRACKING_PARAMS = {
@@ -289,7 +291,7 @@ def main():
 
     memory_file = Path("agent/MEMORY.md")
     if memory_file.exists():
-        mem_content = memory_file.read_text(encoding="utf-8")
+        mem_content = read_text_fallback(memory_file)
         new_fact = f"- [RESEARCH_AUTO] Scraped via Playwright for '{topic_str}'. See `{save_path}`."
         memory_file.write_text(mem_content + f"\n{new_fact}\n", encoding="utf-8")
 

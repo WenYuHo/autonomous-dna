@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from autodna.tools.benchmark import get_ignore_list, is_text_file
+from autodna.tools.io_utils import read_text_fallback
 
 DEFAULT_GATES = [
     "memory_facts<=100",
@@ -16,7 +17,7 @@ DEFAULT_GATES = [
 def count_memory_facts(memory_path: Path) -> Optional[int]:
     if not memory_path.exists():
         return None
-    content = memory_path.read_text(encoding="utf-8")
+    content = read_text_fallback(memory_path)
     return len(re.findall(r"^- ", content, flags=re.MULTILINE))
 
 
