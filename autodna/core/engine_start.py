@@ -51,6 +51,22 @@ def _branch_exists(branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _branch_is_ancestor(branch_name: str, head_ref: str) -> bool:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", branch_name, head_ref],
+        shell=False,
+    )
+    return result.returncode == 0
+
+
+def _update_branch_to_head(branch_name: str, head_ref: str) -> bool:
+    result = subprocess.run(
+        ["git", "branch", "-f", branch_name, head_ref],
+        shell=False,
+    )
+    return result.returncode == 0
+
+
 def setup_worktree(name):
     worktree_path = pathlib.Path(name)
     if worktree_path.exists() and not _is_worktree_dir(worktree_path):
@@ -61,6 +77,15 @@ def setup_worktree(name):
         print(f"ðŸ“‚ Creating worktree: {name}...")
         branch_name = f"autodna-{name}"
         if _branch_exists(branch_name):
+            if not _branch_is_ancestor(branch_name, "HEAD"):
+                print(
+                    f"âš ï¸  Branch {branch_name} has unmerged commits. "
+                    "Resolve manually before recreating worktree."
+                )
+                sys.exit(1)
+            if not _update_branch_to_head(branch_name, "HEAD"):
+                print(f"âŒ Error: Failed to fast-forward {branch_name} to HEAD.")
+                sys.exit(1)
             cmd = ["git", "worktree", "add", name, branch_name]
         else:
             cmd = ["git", "worktree", "add", name, "-b", branch_name]
