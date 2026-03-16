@@ -55,8 +55,18 @@ def claim_task(task_id, agent_name):
     db = load_db()
     for t in db["tasks"]:
         if t["id"] == task_id:
-            if t["status"] == "completed":
+            if t["status"] in {"completed", "done"}:
                 print(f"❌ Task #{task_id} is already completed.")
+                return
+            assigned_to = t.get("assigned_to")
+            if assigned_to and assigned_to != agent_name:
+                print(f"❌ Task #{task_id} is already claimed by {assigned_to}.")
+                return
+            if t["status"] == "in_progress":
+                if assigned_to == agent_name:
+                    print(f"✅ {agent_name} already has Task #{task_id} claimed.")
+                else:
+                    print(f"❌ Task #{task_id} is already in progress.")
                 return
             t["status"] = "in_progress"
             t["assigned_to"] = agent_name
