@@ -106,6 +106,28 @@ class TestEngineStart(unittest.TestCase):
                     engine_start.setup_worktree("worker-3")
 
     @patch("subprocess.run")
+    @patch("pathlib.Path.exists")
+    def test_setup_worktree_refreshes_existing_worktree(self, mock_exists, mock_run):
+        mock_exists.side_effect = [True, False]
+        mock_run.return_value.returncode = 0
+
+        with patch("autodna.core.engine_start._is_worktree_dir", return_value=True):
+            with patch("autodna.core.engine_start._branch_exists", return_value=True):
+                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=True):
+                    with patch("autodna.core.engine_start._worktree_has_changes", return_value=False):
+                        with patch("autodna.core.engine_start._remove_worktree", return_value=True) as mock_remove:
+                            with patch("autodna.core.engine_start._update_branch_to_head", return_value=True):
+                                with patch("autodna.core.engine_start.setup_junction") as mock_junction:
+                                    engine_start.setup_worktree("worker-3")
+
+                                    mock_remove.assert_called_once_with("worker-3")
+                                    mock_run.assert_called_once_with(
+                                        ["git", "worktree", "add", "worker-3", "autodna-worker-3"],
+                                        shell=False,
+                                    )
+                                    self.assertEqual(mock_junction.call_count, 4)
+
+    @patch("subprocess.run")
     def test_launch_agent_interactive(self, mock_run):
         result = engine_start.launch_agent("test-agent", "Do stuff", color="0C", headless=False)
         self.assertIsNone(result)

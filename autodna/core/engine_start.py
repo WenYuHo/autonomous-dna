@@ -67,11 +67,47 @@ def _update_branch_to_head(branch_name: str, head_ref: str) -> bool:
     return result.returncode == 0
 
 
+def _worktree_has_changes(path: pathlib.Path) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _remove_worktree(name: str) -> bool:
+    result = subprocess.run(
+        ["git", "worktree", "remove", name],
+        shell=False,
+    )
+    return result.returncode == 0
+
+
 def setup_worktree(name):
     worktree_path = pathlib.Path(name)
-    if worktree_path.exists() and not _is_worktree_dir(worktree_path):
-        print(f"âš ï¸  Found non-worktree folder {name}. Removing to recreate worktree.")
-        shutil.rmtree(worktree_path, ignore_errors=True)
+    if worktree_path.exists():
+        if _is_worktree_dir(worktree_path):
+            branch_name = f"autodna-{name}"
+            if not _branch_exists(branch_name):
+                print(f"âš ï¸  Worktree {name} exists without branch {branch_name}. Resolve manually.")
+                sys.exit(1)
+            if not _branch_is_ancestor(branch_name, "HEAD"):
+                print(
+                    f"âš ï¸  Branch {branch_name} has unmerged commits. "
+                    "Resolve manually before recreating worktree."
+                )
+                sys.exit(1)
+            if _worktree_has_changes(worktree_path):
+                print(f"âš ï¸  Worktree {name} has uncommitted changes. Resolve manually.")
+                sys.exit(1)
+            print(f"ðŸ”„ Refreshing worktree {name} to latest HEAD.")
+            if not _remove_worktree(name):
+                print(f"âŒ Error: Failed to remove worktree '{name}'.")
+                sys.exit(1)
+        else:
+            print(f"âš ï¸  Found non-worktree folder {name}. Removing to recreate worktree.")
+            shutil.rmtree(worktree_path, ignore_errors=True)
 
     if not worktree_path.exists():
         print(f"ðŸ“‚ Creating worktree: {name}...")
