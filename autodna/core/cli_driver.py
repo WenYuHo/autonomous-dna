@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 import shlex
 import shutil
+import sys
 
 class BaseDriver:
     def get_command(self, model: str, mission: str) -> List[str]:
@@ -71,6 +72,9 @@ class CodexDriver(BaseDriver):
         prompt_flag = os.environ.get("AUTODNA_CODEX_PROMPT_FLAG")
         model_flag = os.environ.get("AUTODNA_CODEX_MODEL_FLAG", "--model")
         extra_args = os.environ.get("AUTODNA_CODEX_EXTRA_ARGS", "")
+        if not extra_args and not sys.stdin.isatty():
+            # Non-interactive sessions need exec mode to avoid TTY errors.
+            extra_args = "exec --full-auto"
 
         if Path(cmd).exists():
             cmd_parts = [cmd]
