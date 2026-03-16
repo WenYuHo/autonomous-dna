@@ -3,6 +3,7 @@ import subprocess
 import time
 import sys
 import pathlib
+import shutil
 
 GEMINI_PLATFORMS = {"GEMINI", "GEMINI_CLI", "GEMINI-CLI", "ANTIGRAVITY"}
 
@@ -34,10 +35,33 @@ def setup_junction(target_dir, folder_name):
         subprocess.run(f'mklink /J "{target_folder}" "{root_folder}"', shell=True)
 
 
+def _is_worktree_dir(path: pathlib.Path) -> bool:
+    git_path = path / ".git"
+    return git_path.is_file() or git_path.is_dir()
+
+
+def _branch_exists(branch_name: str) -> bool:
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        shell=False,
+    )
+    return result.returncode == 0
+
+
 def setup_worktree(name):
-    if not os.path.exists(name):
+    worktree_path = pathlib.Path(name)
+    if worktree_path.exists() and not _is_worktree_dir(worktree_path):
+        print(f"âš ï¸  Found non-worktree folder {name}. Removing to recreate worktree.")
+        shutil.rmtree(worktree_path, ignore_errors=True)
+
+    if not worktree_path.exists():
         print(f"ðŸ“‚ Creating worktree: {name}...")
-        res = subprocess.run(f"git worktree add {name} -b autodna-{name}", shell=True)
+        branch_name = f"autodna-{name}"
+        if _branch_exists(branch_name):
+            cmd = ["git", "worktree", "add", name, branch_name]
+        else:
+            cmd = ["git", "worktree", "add", name, "-b", branch_name]
+        res = subprocess.run(cmd, shell=False)
         if res.returncode != 0:
             print(f"âŒ Error: Failed to create worktree '{name}'. Check git status (e.g., commit changes first).")
             sys.exit(1)
@@ -46,6 +70,29 @@ def setup_worktree(name):
     setup_junction(name, ".venv")
     setup_junction(name, "node_modules")
     setup_junction(name, "models") # Crucial for 2070 Super: share the heavy model files
+
+
+def _task_cli_hint() -> str:
+    return "python -m autodna.cli"
+
+
+def build_manager_mission() -> str:
+    cmd = _task_cli_hint()
+    return (
+        "Manager Mode: You are the TPM. Run "
+        f"`{cmd} tasks list` (or `autodna tasks list` if installed) to see tasks. "
+        "Tell worker-1 or worker-2 to claim specific task IDs. Merge branches when done."
+    )
+
+
+def build_worker_mission(label: str, folder: str) -> str:
+    cmd = _task_cli_hint()
+    return (
+        f"{label}: Run `{cmd} tasks list --status pending` (or `autodna tasks list --status pending` if installed) "
+        "to see your queue. "
+        f"Claim tasks via `{cmd} tasks claim <id> {folder}` (or `autodna tasks claim <id> {folder}`). "
+        f"Complete via `{cmd} tasks complete <id>` (or `autodna tasks complete <id>`). Stay in {folder} folder."
+    )
 
 
 def launch_agent(name, mission, color="0A", headless=False):
@@ -106,18 +153,18 @@ def main():
 
     # 3. Launch Manager (Orchestrator)
     print(f"ðŸš€ Launching Manager {'(Headless)' if headless else '(Blue)'}...")
-    log_m = launch_agent(".", "Manager Mode: You are the TPM. Run `autodna tasks list` to see tasks. Tell worker-1 or worker-2 to claim specific task IDs. Merge branches when done.", "0B", headless=headless)
+    log_m = launch_agent(".", build_manager_mission(), "0B", headless=headless)
 
     time.sleep(3)
 
     # 4. Launch Workers
     print(f"ðŸš€ Launching Worker 1 {'(Headless)' if headless else '(Green)'}...")
-    log_1 = launch_agent("worker-1", "Worker-1: Run `autodna tasks list --status pending` to see your queue. Claim tasks via `autodna tasks claim <id> worker-1`. Complete via `autodna tasks complete <id>`. Stay in worker-1 folder.", "0A", headless=headless)
+    log_1 = launch_agent("worker-1", build_worker_mission("Worker-1", "worker-1"), "0A", headless=headless)
 
     time.sleep(3)
 
     print(f"ðŸš€ Launching Worker 2 {'(Headless)' if headless else '(Yellow)'}...")
-    log_2 = launch_agent("worker-2", "Worker-2: Run `autodna tasks list --status pending` to see your queue. Claim tasks via `autodna tasks claim <id> worker-2`. Complete via `autodna tasks complete <id>`. Stay in worker-2 folder.", "0E", headless=headless)
+    log_2 = launch_agent("worker-2", build_worker_mission("Worker-2", "worker-2"), "0E", headless=headless)
 
     if headless:
         print("\nâœ… Autonomous DNA is running in background. Streaming logs below... (Press Ctrl+C to exit monitor loop)")
