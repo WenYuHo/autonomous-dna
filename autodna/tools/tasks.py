@@ -77,15 +77,31 @@ def claim_task(task_id, agent_name):
             return
     print(f"❌ Task #{task_id} not found.")
 
-def complete_task(task_id):
+def complete_task(task_id, notes=None):
     db = load_db()
     for t in db["tasks"]:
         if t["id"] == task_id:
             t["status"] = "completed"
+            if notes:
+                t["notes"] = notes
             t["updated_at"] = get_now()
             t["heartbeat_at"] = get_now()
             save_db(db)
             print(f"✅ Task #{task_id} marked as COMPLETED!")
+            return
+    print(f"❌ Task #{task_id} not found.")
+
+def fail_task(task_id, notes=None):
+    db = load_db()
+    for t in db["tasks"]:
+        if t["id"] == task_id:
+            t["status"] = "error"
+            if notes:
+                t["notes"] = notes
+            t["updated_at"] = get_now()
+            t["heartbeat_at"] = get_now()
+            save_db(db)
+            print(f"❌ Task #{task_id} marked as ERROR!")
             return
     print(f"❌ Task #{task_id} not found.")
 
@@ -155,6 +171,20 @@ def main():
     # Complete
     parser_complete = subparsers.add_parser("complete", help="Complete a task")
     parser_complete.add_argument("id", type=int, help="Task ID")
+    parser_complete.add_argument("--notes", help="Optional completion notes")
+
+    # Mark-Done (Alias for complete)
+    parser_done = subparsers.add_parser("mark-done", help="Alias for complete")
+    parser_done.add_argument("id", type=int, help="Task ID")
+    parser_done.add_argument("--notes", help="Optional completion notes")
+
+    # Mark-Error
+    parser_error = subparsers.add_parser("mark-error", help="Mark a task as failed")
+    parser_error.add_argument("id", type=int, help="Task ID")
+    parser_error.add_argument("--notes", help="Optional error notes")
+
+    # Next (Linear)
+    parser_next = subparsers.add_parser("next", help="Get the next actionable task (Linear Mode)")
 
     args = parser.parse_args()
 
@@ -166,10 +196,42 @@ def main():
         add_task(args.title, args.description)
     elif args.action == "claim":
         claim_task(args.id, args.agent)
-    elif args.action == "complete":
-        complete_task(args.id)
+    elif args.action in {"complete", "mark-done"}:
+        complete_task(args.id, args.notes)
+    elif args.action == "mark-error":
+        fail_task(args.id, args.notes)
+    elif args.action == "next":
+        task = get_next_task()
+        if task:
+            print(json.dumps(task))
+        else:
+            print("null")
     else:
         parser.print_help()
+
+def get_next_task():
+    """Returns the next actionable task (pending or retryable error)."""
+    db = load_db()
+    tasks = db["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+
+    def is_blocked(t):
+        if not t.get("blocked_by"): return False
+        blocker = by_id.get(t["blocked_by"])
+        return blocker and blocker["status"] not in {"completed", "done"}
+
+    # 1. Look for pending
+    for t in tasks:
+        if t["status"] == "pending" and not is_blocked(t):
+            if not t["title"].strip().upper().startswith("CYCLE"):
+                return t
+
+    # 2. Look for error/blocked to retry
+    for t in tasks:
+        if t["status"] in {"error", "blocked"} and not is_blocked(t):
+             if not t["title"].strip().upper().startswith("CYCLE"):
+                return t
+    return None
 
 if __name__ == "__main__":
     main()

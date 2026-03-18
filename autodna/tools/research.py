@@ -167,20 +167,35 @@ def ensure_unique_path(path: Path, max_tries: int = 1000) -> Path:
         candidate = path.with_name(f"{path.stem}_{idx}{path.suffix}")
         if not candidate.exists():
             return candidate
-    return path
+    # Placeholder for benchmark logic.
+    # In a real implementation, this would involve parsing the artifact, calculating
+    # token estimates based on OpenAI's tiktoken or a similar tokenizer,
+    # and comparing against the current repository's average token consumption.
+    def estimate_tokens(text: str) -> int:
+        return len(text) // 4  # Very rough heuristic.
 
+    # ... existing code ...
 
-def run_research(
-    topic: str,
-    max_sources: int,
-    allow_domains: list[str],
-    block_domains: list[str],
-    dedupe_host: bool,
-    dedupe_url: bool,
-    timeout_ms: int,
-    retries: int,
-) -> str:
-    """Uses Playwright to search DuckDuckGo Lite, click top results, and extract text."""
+    def run_research(
+        topic: str,
+        max_sources: int,
+        allow_domains: list[str],
+        block_domains: list[str],
+        dedupe_host: bool,
+        dedupe_url: bool,
+        timeout_ms: int,
+        retries: int,
+        benchmark: bool = False,
+    ) -> str:
+        # ... inside the loop ...
+        # Add token estimation to the artifact
+        # ...
+        if benchmark:
+            report_lines.append("## Benchmarking Analysis")
+            token_count = estimate_tokens(text)
+            report_lines.append(f"- Estimated tokens for this source: {token_count}")
+        # ...
+
     report_lines = [f"# Research Report: {topic}", ""]
     report_lines.append("## Filters")
     report_lines.append(f"- Max sources: {max_sources}")

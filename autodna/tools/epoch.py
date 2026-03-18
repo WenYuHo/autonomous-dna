@@ -250,6 +250,13 @@ def main() -> None:
     if not eval_ok:
         print("[WARN] Eval phase failed after retries.")
     step += 1
+    
+    # New: Trigger Benchmarking if configured
+    if os.getenv("AUTODNA_ENABLE_BENCHMARKING") == "true":
+        print(f"\n[{step}/{total_steps}] BENCHMARKING CYCLE")
+        safe_flush()
+        # Logic to trigger benchmarking
+        step += 1
 
     print(f"\n[{step}/{total_steps}] SYNCING MEMORY FRAGMENTS")
     print("Memory and queue state analyzed.")
