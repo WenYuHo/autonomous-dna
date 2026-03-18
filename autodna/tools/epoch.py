@@ -222,11 +222,16 @@ def main() -> None:
         step += 1
 
     if improve_enabled:
-        print(f"\n[{step}/{total_steps}] IMPROVEMENT")
-        safe_flush()
-        if not improve_args:
-            print("[WARN] Improve step enabled but no args provided. Skipping.")
+        # Check for comparative analysis report
+        analysis_dir = Path("conductor/analysis")
+        reports = list(analysis_dir.glob("*.md"))
+        if not reports:
+            print("[WARN] Improve step enabled but no comparative analysis report found in conductor/analysis/. Skipping improve step.")
+            improve_enabled = False
         else:
+            print(f"[INFO] Found {len(reports)} analysis report(s). Proceeding with improvement.")
+
+        if improve_enabled:
             improve_ok = run_with_retries(
                 [sys.executable, "autodna/cli.py", "improve", *improve_args],
                 attempts=max(1, args.improve_retries),
