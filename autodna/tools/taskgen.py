@@ -69,12 +69,9 @@ def _is_blocked(task: dict, by_id: dict) -> bool:
     status = str(blocker.get("status", "")).lower()
     if status in UNBLOCKED_STATUSES:
         return False
-    if _heartbeat_fresh(blocker):
-        return True
-    if status in ACTIVE_BLOCKER_STATUSES and blocker.get("assigned_to") and blocker.get("heartbeat_at"):
-        return True
-    return False
-
+    if status == "in_progress":
+        return _heartbeat_fresh(blocker)
+    return True
 
 def has_actionable_tasks(tasks: list[dict]) -> bool:
     by_id = _task_by_id(tasks)

@@ -414,9 +414,9 @@ def _is_blocked(task: Dict[str, Any], by_id: dict[int, Dict[str, Any]]) -> bool:
     status = str(blocker.get("status", "")).lower()
     if status in UNBLOCKED_STATUSES:
         return False
-    if _heartbeat_fresh(blocker):
-        return True
-    return False
+    if status == "in_progress":
+        return _heartbeat_fresh(blocker)
+    return True
 
 
 def get_next_task() -> Optional[Dict[str, Any]]:
