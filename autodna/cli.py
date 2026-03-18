@@ -7,11 +7,6 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous DNA Global CLI")
     subparsers = parser.add_subparsers(dest="command", help="The command to run")
 
-    # Static Commands:
-    # Start Swarm
-    parser_start = subparsers.add_parser("start", help="Start the Autonomous DNA agent swarm in the current repo")
-    parser_start.add_argument("--headless", action="store_true", help="Run the swarm in headless background mode")
-
     # Dynamic Commands from autodna.tools:
     import autodna.tools
     discovered_tools = []
@@ -23,13 +18,7 @@ def main():
 
     args, unknown = parser.parse_known_args()
 
-    if args.command == "start":
-        from autodna.core.engine_start import main as engine_main
-        sys.argv = [sys.argv[0]]
-        if args.headless:
-            sys.argv.append("--headless")
-        engine_main()
-    elif args.command in discovered_tools:
+    if args.command in discovered_tools:
         # Dynamically import and route
         try:
             module = importlib.import_module(f"autodna.tools.{args.command}")

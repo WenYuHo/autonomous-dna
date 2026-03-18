@@ -1,5 +1,5 @@
 """
-scripts/sync_state.py (Ralph Extension)
+tools/sync_state.py
 Modern State Sync for Autonomous-DNA.
 Manages TASK_QUEUE.json: reserve, complete, status.
 """
