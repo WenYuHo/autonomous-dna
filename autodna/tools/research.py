@@ -1,7 +1,9 @@
-﻿import sys
+import sys
 import argparse
 import urllib.parse
 import time
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from autodna.tools.io_utils import read_text_fallback
@@ -27,6 +29,9 @@ TRACKING_PARAMS = {
     "source",
     "spm",
 }
+
+DEFAULT_ARTIFACT_DIR = Path("agent/skills/auto_generated")
+
 
 
 def normalize_url(url: str) -> str:
@@ -129,6 +134,41 @@ def validate_artifact(path: Path, min_bytes: int = 1) -> bool:
         return path.stat().st_size >= min_bytes
     except Exception:
         return False
+
+
+
+def slugify_topic(topic: str, max_len: int = 30) -> str:
+    slug = "".join(ch if ch.isalnum() else "_" for ch in topic[:max_len]).strip("_").lower()
+    return slug or "research"
+
+
+def build_artifact_path(
+    topic_str: str,
+    out_dir: Path,
+    timestamped: bool,
+    now: datetime | None = None,
+) -> Path:
+    slug = slugify_topic(topic_str)
+    if timestamped:
+        current = now or datetime.now(timezone.utc)
+        ts = current.strftime("%Y%m%dT%H%M%S") + f"{int(current.microsecond / 1000):03d}Z"
+        filename = f"{slug}_{ts}.md"
+    else:
+        filename = f"{slug}.md"
+    return out_dir / filename
+
+
+
+
+def ensure_unique_path(path: Path, max_tries: int = 1000) -> Path:
+    if not path.exists():
+        return path
+    for idx in range(1, max_tries + 1):
+        candidate = path.with_name(f"{path.stem}_{idx}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path
+
 
 def run_research(
     topic: str,
@@ -252,6 +292,8 @@ def main():
     parser.add_argument("--no-dedupe-url", action="store_true", help="Disable URL-level dedupe")
     parser.add_argument("--timeout-ms", type=int, default=15000, help="Timeout per page navigation (ms)")
     parser.add_argument("--retries", type=int, default=2, help="Retry count for navigation failures")
+    parser.add_argument("--timestamped", action="store_true", help="Append UTC timestamp to artifact filename")
+    parser.add_argument("--out-dir", default=str(DEFAULT_ARTIFACT_DIR), help="Output directory for research artifacts")
 
     args_to_parse = sys.argv[1:]
     if sys.argv and sys.argv[0].endswith("cli.py"):
@@ -279,8 +321,10 @@ def main():
     if not report_content:
         sys.exit(1)
 
-    filename = "".join(x if x.isalnum() else "_" for x in topic_str[:30]).strip("_").lower()
-    save_path = Path(f"agent/skills/auto_generated/{filename}.md")
+    timestamped = args.timestamped or os.getenv("AUTODNA_RESEARCH_TIMESTAMPED", "").strip().lower() in {"1", "true", "yes"}
+    out_dir = Path(args.out_dir)
+    save_path = build_artifact_path(topic_str, out_dir, timestamped)
+    save_path = ensure_unique_path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     save_path.write_text(report_content, encoding="utf-8")

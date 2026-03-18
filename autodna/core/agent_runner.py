@@ -2,9 +2,54 @@ import sys
 import subprocess
 import time
 import os
+import json
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 CODEX_PLATFORMS = {"CODEX", "CODEX_APP", "CODEX_DESKTOP", "CODEX_CLI", "OPENAI"}
+HEARTBEAT_STATUSES = {"pending", "in_progress", "blocked", "error"}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _update_task_heartbeat(agent_name: str) -> None:
+    queue_path = Path("agent/TASK_QUEUE.json")
+    if not queue_path.exists():
+        return
+    try:
+        data = json.loads(queue_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    tasks = data.get("tasks", [])
+    if not isinstance(tasks, list):
+        return
+
+    changed = False
+    now = _now_iso()
+    for task in tasks:
+        if task.get("assigned_to") != agent_name:
+            continue
+        status = str(task.get("status", "")).lower()
+        if status not in HEARTBEAT_STATUSES:
+            continue
+        task["heartbeat_at"] = now
+        changed = True
+    if changed:
+        queue_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _start_heartbeat(agent_name: str, interval_seconds: int, stop_event: threading.Event) -> threading.Thread:
+    def _loop():
+        while not stop_event.is_set():
+            _update_task_heartbeat(agent_name)
+            stop_event.wait(interval_seconds)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def _resolve_platform() -> str:
@@ -59,109 +104,122 @@ def main():
     is_codex = _is_codex_platform(platform_name)
     models = _build_models(is_codex)
 
+    heartbeat_interval = int(os.environ.get("AUTODNA_TASK_HEARTBEAT_INTERVAL", "120"))
+    heartbeat_enabled = heartbeat_interval > 0
+    stop_event = threading.Event()
+    heartbeat_thread = None
+    if heartbeat_enabled:
+        heartbeat_thread = _start_heartbeat(agent_name, heartbeat_interval, stop_event)
+
     current_model_index: int = 0
     max_retries: int = 3
     retries: int = 0
     codex_failed = False
 
-    while current_model_index < len(models):
-        model = models[current_model_index]
-        model_label = model if model else "default"
-        print(f"[{agent_name}] Starting agent with model: {model_label} (Attempt {retries + 1})")
-
-        # Build command dynamically
-        cmd_list = driver.get_command(model, mission)
-
-        # We read stdout and stderr via PIPE so we can parse it for errors AND echo it.
-        # This prevents UnicodeEncodeError issues when printing characters the terminal can't handle natively.
-        try:
-            process = subprocess.Popen(
-                cmd_list,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, # Merge stderr into stdout
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-        except (FileNotFoundError, PermissionError, OSError) as exc:
-            if is_codex and not codex_failed:
-                codex_failed = True
-                print(f"[{agent_name}] Codex CLI unavailable ({exc}). Falling back to Gemini.")
-                platform_name = "GEMINI"
-                driver = get_driver(platform_name)
-                is_codex = False
-                models = _build_models(is_codex)
-                current_model_index = 0
-                retries = 0
-                continue
-            if isinstance(exc, FileNotFoundError):
-                print(f"[{agent_name}] CLI unavailable: {cmd_list[0]}.")
-            elif isinstance(exc, PermissionError):
-                print(f"[{agent_name}] Permission denied launching CLI: {cmd_list[0]}.")
-            else:
-                print(f"[{agent_name}] Failed to launch CLI: {exc}.")
-            sys.exit(1)
-
-        quota_exhausted = False
-        model_unavailable = False
-
-        # Read the stream eagerly
-        if process.stdout is not None:
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-
-                if line:
-                    # Echo to our own stdout (which symphony_start.py captures into the .log file or console)
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-
-                    # Check for model availability / quota exhaustion text dynamically based on the driver
-                    if "ModelNotFoundError" in line or "Requested entity was not found" in line:
-                        model_unavailable = True
-                        quota_exhausted = True
-                        break
-                    if driver.is_quota_exhausted(line):
-                        quota_exhausted = True
-                        break
-
-        # Ensure process finishes or we kill it if we broke early due to quota
-        if process.poll() is None:
-            process.terminate()
+    try:
+        while current_model_index < len(models):
+            model = models[current_model_index]
+            model_label = model if model else "default"
+            print(f"[{agent_name}] Starting agent with model: {model_label} (Attempt {retries + 1})")
+    
+            # Build command dynamically
+            cmd_list = driver.get_command(model, mission)
+    
+            # We read stdout and stderr via PIPE so we can parse it for errors AND echo it.
+            # This prevents UnicodeEncodeError issues when printing characters the terminal can't handle natively.
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-
-        if quota_exhausted:
-            if model_unavailable:
-                print(f"[{agent_name}] Model unavailable: {model_label}.")
-            else:
-                print(f"[{agent_name}] Quota exhausted for model {model_label}.")
-            current_model_index += 1
-            retries = 0
-            if current_model_index < len(models):
-                next_label = models[current_model_index] if models[current_model_index] else "default"
-                print(f"[{agent_name}] Switching to fallback model: {next_label}")
-                time.sleep(2) # Brief cooldown before rapid-reboot
-            else:
-                print(f"[{agent_name}] All fallback models exhausted. Cannot continue.")
-                break
-        else:
-            # If the process exited for a reason *other* than quota (e.g. fatal code bug, user abort)
-            exit_code = process.returncode
-            if exit_code == 0:
-                print(f"[{agent_name}] Agent exited cleanly.")
-                break
-            else:
-                print(f"[{agent_name}] Agent crashed with code {exit_code}. Retrying...")
-                retries += 1
-                if retries >= max_retries:
-                    print(f"[{agent_name}] Max retries reached for model {model_label}. Switching model.")
-                    current_model_index += 1
+                process = subprocess.Popen(
+                    cmd_list,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, # Merge stderr into stdout
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+            except (FileNotFoundError, PermissionError, OSError) as exc:
+                if is_codex and not codex_failed:
+                    codex_failed = True
+                    print(f"[{agent_name}] Codex CLI unavailable ({exc}). Falling back to Gemini.")
+                    platform_name = "GEMINI"
+                    driver = get_driver(platform_name)
+                    is_codex = False
+                    models = _build_models(is_codex)
+                    current_model_index = 0
                     retries = 0
-                time.sleep(3)
+                    continue
+                if isinstance(exc, FileNotFoundError):
+                    print(f"[{agent_name}] CLI unavailable: {cmd_list[0]}.")
+                elif isinstance(exc, PermissionError):
+                    print(f"[{agent_name}] Permission denied launching CLI: {cmd_list[0]}.")
+                else:
+                    print(f"[{agent_name}] Failed to launch CLI: {exc}.")
+                sys.exit(1)
+    
+            quota_exhausted = False
+            model_unavailable = False
+    
+            # Read the stream eagerly
+            if process.stdout is not None:
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+    
+                    if line:
+                        # Echo to our own stdout (which symphony_start.py captures into the .log file or console)
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+    
+                        # Check for model availability / quota exhaustion text dynamically based on the driver
+                        if "ModelNotFoundError" in line or "Requested entity was not found" in line:
+                            model_unavailable = True
+                            quota_exhausted = True
+                            break
+                        if driver.is_quota_exhausted(line):
+                            quota_exhausted = True
+                            break
+    
+            # Ensure process finishes or we kill it if we broke early due to quota
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+    
+            if quota_exhausted:
+                if model_unavailable:
+                    print(f"[{agent_name}] Model unavailable: {model_label}.")
+                else:
+                    print(f"[{agent_name}] Quota exhausted for model {model_label}.")
+                current_model_index += 1
+                retries = 0
+                if current_model_index < len(models):
+                    next_label = models[current_model_index] if models[current_model_index] else "default"
+                    print(f"[{agent_name}] Switching to fallback model: {next_label}")
+                    time.sleep(2) # Brief cooldown before rapid-reboot
+                else:
+                    print(f"[{agent_name}] All fallback models exhausted. Cannot continue.")
+                    break
+            else:
+                # If the process exited for a reason *other* than quota (e.g. fatal code bug, user abort)
+                exit_code = process.returncode
+                if exit_code == 0:
+                    print(f"[{agent_name}] Agent exited cleanly.")
+                    break
+                else:
+                    print(f"[{agent_name}] Agent crashed with code {exit_code}. Retrying...")
+                    retries += 1
+                    if retries >= max_retries:
+                        print(f"[{agent_name}] Max retries reached for model {model_label}. Switching model.")
+                        current_model_index += 1
+                        retries = 0
+                    time.sleep(3)
+    finally:
+        if heartbeat_enabled:
+            stop_event.set()
+            if heartbeat_thread:
+                heartbeat_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

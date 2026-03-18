@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone, timedelta
 
 from autodna.tools import taskgen
 
@@ -88,3 +89,111 @@ def test_taskgen_skips_when_artifact_reused(tmp_path):
     assert count == 0
     data = json.loads(queue_path.read_text(encoding="utf-8"))
     assert len(data["tasks"]) == 1
+
+
+def test_has_actionable_tasks_unblocks_completed():
+    tasks = [
+        {
+            "id": 1,
+            "title": "[RESEARCH] Completed blocker",
+            "status": "completed",
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Unblocked task",
+            "status": "pending",
+            "blocked_by": 1,
+        },
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_in_progress():
+    tasks = [
+        {
+            "id": 1,
+            "title": "[IMPROVE] Active work",
+            "status": "in_progress",
+        }
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_error_unblocked():
+    tasks = [
+        {
+            "id": 1,
+            "title": "[RESEARCH] Done blocker",
+            "status": "completed",
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Failed task",
+            "status": "error",
+            "blocked_by": 1,
+        },
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_treats_blocked_when_blocker_not_active():
+    tasks = [
+        {
+            "id": 1,
+            "title": "CYCLE 1 - AUTOGEN: Research Synthesis",
+            "status": "pending",
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Blocked task",
+            "status": "blocked",
+            "blocked_by": 1,
+        },
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_true_when_blocker_active_heartbeat():
+    now = datetime.now(timezone.utc)
+    tasks = [
+        {
+            "id": 1,
+            "title": "[RESEARCH] Active blocker",
+            "status": "in_progress",
+            "assigned_to": "worker-1",
+            "heartbeat_at": now.isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Blocked task",
+            "status": "pending",
+            "blocked_by": 1,
+        },
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_unblocks_when_heartbeat_stale():
+    old = datetime.now(timezone.utc) - timedelta(seconds=taskgen.HEARTBEAT_TTL_SECONDS + 5)
+    tasks = [
+        {
+            "id": 1,
+            "title": "[RESEARCH] Stale blocker",
+            "status": "in_progress",
+            "assigned_to": "worker-1",
+            "heartbeat_at": old.isoformat().replace("+00:00", "Z"),
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Blocked task",
+            "status": "pending",
+            "blocked_by": 1,
+        },
+    ]
+
+    assert taskgen.has_actionable_tasks(tasks) is True

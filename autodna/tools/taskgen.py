@@ -1,8 +1,9 @@
 import argparse
 import json
+import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -13,6 +14,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 DEFAULT_QUEUE_PATH = Path("agent/TASK_QUEUE.json")
 DEFAULT_ARTIFACT_DIR = Path("agent/skills/auto_generated")
+UNBLOCKED_STATUSES = {"done", "info", "completed"}
+ACTIONABLE_STATUSES = {"pending", "in_progress", "error", "blocked"}
+ACTIVE_BLOCKER_STATUSES = {"in_progress"}
+HEARTBEAT_TTL_SECONDS = int(os.getenv("AUTODNA_TASK_HEARTBEAT_TTL", "900"))
 
 
 def load_queue(path: Path) -> dict:
@@ -34,6 +39,26 @@ def _task_by_id(tasks: list[dict]) -> dict:
     return {t.get("id"): t for t in tasks if isinstance(t.get("id"), int)}
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def _heartbeat_fresh(task: dict, ttl_seconds: int = HEARTBEAT_TTL_SECONDS) -> bool:
+    heartbeat = _parse_iso(task.get("heartbeat_at"))
+    if not heartbeat:
+        return False
+    now = datetime.now(timezone.utc)
+    return now - heartbeat <= timedelta(seconds=ttl_seconds)
+
+
 def _is_blocked(task: dict, by_id: dict) -> bool:
     blocked_by = task.get("blocked_by")
     if blocked_by is None:
@@ -41,13 +66,20 @@ def _is_blocked(task: dict, by_id: dict) -> bool:
     blocker = by_id.get(blocked_by)
     if not blocker:
         return False
-    return blocker.get("status") not in ("done", "info")
+    status = str(blocker.get("status", "")).lower()
+    if status in UNBLOCKED_STATUSES:
+        return False
+    if _heartbeat_fresh(blocker):
+        return True
+    if status in ACTIVE_BLOCKER_STATUSES and blocker.get("assigned_to") and blocker.get("heartbeat_at"):
+        return True
+    return False
 
 
 def has_actionable_tasks(tasks: list[dict]) -> bool:
     by_id = _task_by_id(tasks)
     for task in tasks:
-        if task.get("status") != "pending":
+        if task.get("status") not in ACTIONABLE_STATUSES:
             continue
         title = task.get("title", "")
         if title.strip().upper().startswith("CYCLE"):

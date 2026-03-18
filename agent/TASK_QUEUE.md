@@ -4,6 +4,14 @@
 ## IN PROGRESS
 
 ## BACKLOG
+- [x] WORKTREE_AUTO_CLEAN: Auto-clean dirty worker worktrees before spawning swarm (Reserved: Codex @ 2026-03-17T04:36:24Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-17T04:43:24Z)
+- [x] HEARTBEAT_LEASE: Add task heartbeats/leases to detect active work and unblock stale blockers (Reserved: Codex @ 2026-03-17T03:59:13Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-17T04:03:25Z)
+- [x] EPOCH_AUTOFLOW: Auto research -> taskgen -> eval gate -> implement loop on `autodna epoch` (Reserved: Codex @ 2026-03-17T02:47:39Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-17T02:55:23Z)
+- [x] WORKTREE_DIRTY_AUTO: Default auto-handle dirty worker worktrees without manual intervention (Reserved: Codex @ 2026-03-16T05:34:52Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-16T05:35:53Z)
+- [x] WORKTREE_DIRTY_POLICY: Auto-handle dirty worker worktrees (keep/stash/commit) to resume runs (Reserved: Codex @ 2026-03-16T05:30:09Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-16T05:31:07Z)
+- [x] SWARM_RESUME_REBASE: Auto-resume manager/worker tasks; rebase and test before merge to avoid conflicts (Reserved: Codex @ 2026-03-16T05:19:29Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-16T05:25:34Z)
+- [x] SELF_IMPROVE_DIRTY: Handle dirty working trees in self-improve (Reserved: Codex @ 2026-03-16T05:15:45Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-16T05:16:04Z)
+- [x] SELF_IMPROVE_BOOTSTRAP: Treat completed as done, bootstrap research/taskgen/eval when queue empty (Reserved: Codex @ 2026-03-16T05:05:45Z | BlockedBy: NONE | Priority: HIGH | Done: 2026-03-16T05:09:27Z)
 - [x] EVAL_TOOL: Create autodna/tools/eval.py for auto-context management (Reserved: Antigravity @ 2026-03-15T02:16:48Z | BlockedBy: NONE | Done: 2026-03-15T02:18:29Z)
 - [x] CONTEXT_EVAL_HOOK: Hook autodna eval into session_start.py (Reserved: Antigravity @ 2026-03-15T02:18:30Z | BlockedBy: NONE | Done: 2026-03-15T02:18:38Z)
 - [x] RESEARCH_TOOL: Create autodna/tools/research.py to query state-of-the-art agent practices (Reserved: Antigravity @ 2026-03-15T02:18:24Z | BlockedBy: NONE | Done: 2026-03-15T02:22:12Z)

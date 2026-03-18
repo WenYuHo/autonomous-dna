@@ -71,6 +71,7 @@ def claim_task(task_id, agent_name):
             t["status"] = "in_progress"
             t["assigned_to"] = agent_name
             t["updated_at"] = get_now()
+            t["heartbeat_at"] = get_now()
             save_db(db)
             print(f"✅ {agent_name} successfully claimed Task #{task_id}!")
             return
@@ -82,6 +83,7 @@ def complete_task(task_id):
         if t["id"] == task_id:
             t["status"] = "completed"
             t["updated_at"] = get_now()
+            t["heartbeat_at"] = get_now()
             save_db(db)
             print(f"✅ Task #{task_id} marked as COMPLETED!")
             return

@@ -15,10 +15,13 @@ import subprocess
 import shutil
 import sys
 import time
+from datetime import datetime, timezone, timedelta
 import re
 import queue
 import threading
 from pathlib import Path
+
+from autodna.tools import dogfood
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -38,17 +41,335 @@ if hasattr(sys.stderr, "reconfigure"):
 
 TASK_QUEUE_FILE = Path("agent/TASK_QUEUE.json")
 DEFAULT_BASE_BRANCHES = ("dev", "main", "master")
+UNBLOCKED_STATUSES = {"done", "info", "completed"}
+DEFAULT_RESEARCH_TOPICS = [
+    "latest state of the art AI coding agent system prompts and framework architecture 2026",
+    "ai coding agent eval harnesses, regression gates, and benchmark suites 2025 2026",
+    "tool-use reliability, prompt injection defenses, and guardrails for coding agents",
+]
+RESEARCH_TIMEOUT_SECONDS = 300
+TASKGEN_TIMEOUT_SECONDS = 120
+EVAL_TIMEOUT_SECONDS = 120
+HEARTBEAT_TTL_SECONDS = int(os.getenv("AUTODNA_TASK_HEARTBEAT_TTL", "900"))
+DIRTY_POLICY_DEFAULT = "stash"
+DIRTY_POLICY_KEEP = "keep"
+DIRTY_POLICY_SKIP = "skip"
+DIRTY_POLICY_STASH = "stash"
+DIRTY_POLICY_COMMIT = "commit"
+WORKER_NAMES = ("worker-1", "worker-2")
 
 from typing import Any, Dict, Optional
 
-def require_clean_working_tree() -> bool:
-    """Ensure no uncommitted changes before starting."""
-    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if result.stdout.strip():
-        logger.warning("Working tree is not clean. Skipping self-improve.")
-        print(result.stdout)
+def _run_git_command(args: list[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(cwd) if cwd else None,
+    )
+
+
+def working_tree_is_clean() -> bool:
+    """Check git working tree status without mutating state."""
+    result = _run_git_command(["git", "status", "--porcelain"])
+    return not result.stdout.strip()
+
+
+def _latest_stash_ref() -> Optional[str]:
+    result = _run_git_command(["git", "stash", "list", "-n", "1", "--format=%gd"])
+    if result.returncode != 0:
+        return None
+    ref = result.stdout.strip()
+    return ref or None
+
+
+def stash_working_tree() -> Optional[str]:
+    """Stash all changes (including untracked) and return the stash ref."""
+    if working_tree_is_clean():
+        return None
+    message = f"autodna-self-improve-{int(time.time())}"
+    result = _run_git_command(["git", "stash", "push", "-u", "-m", message])
+    if result.returncode != 0:
+        logger.warning("Failed to stash working tree changes.")
+        if result.stdout:
+            logger.warning(result.stdout.strip()[-1000:])
+        if result.stderr:
+            logger.warning(result.stderr.strip()[-1000:])
+        return None
+    return _latest_stash_ref()
+
+
+def _current_git_ref() -> str:
+    result = _run_git_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if result.returncode == 0:
+        ref = result.stdout.strip()
+        if ref and ref != "HEAD":
+            return ref
+    sha = _run_git_command(["git", "rev-parse", "HEAD"])
+    if sha.returncode == 0:
+        return sha.stdout.strip()
+    return "HEAD"
+
+
+def commit_dirty_working_tree() -> bool:
+    """Commit dirty changes onto a backup branch and return to the original ref."""
+    if working_tree_is_clean():
+        return True
+    original_ref = _current_git_ref()
+    backup_branch = f"chore/self-improve-dirty-{int(time.time())}"
+    checkout = _run_git_command(["git", "checkout", "-b", backup_branch])
+    if checkout.returncode != 0:
+        logger.warning("Failed to create backup branch for dirty changes.")
+        return False
+
+    add = _run_git_command(["git", "add", "-A"])
+    if add.returncode != 0:
+        logger.warning("Failed to stage dirty changes for backup commit.")
+        _run_git_command(["git", "checkout", original_ref])
+        return False
+
+    commit = _run_git_command(["git", "commit", "-m", "chore: autosave self-improve working tree"])
+    if commit.returncode != 0:
+        logger.warning("Failed to commit dirty changes for backup.")
+        if commit.stdout:
+            logger.warning(commit.stdout.strip()[-1000:])
+        if commit.stderr:
+            logger.warning(commit.stderr.strip()[-1000:])
+        _run_git_command(["git", "checkout", original_ref])
+        return False
+
+    logger.info(f"Saved dirty working tree to backup branch {backup_branch}.")
+    _run_git_command(["git", "checkout", original_ref])
+    return True
+
+
+def restore_stash(stash_ref: Optional[str]) -> bool:
+    """Re-apply and drop the given stash ref."""
+    if not stash_ref:
+        return True
+    apply_result = _run_git_command(["git", "stash", "apply", "--index", stash_ref])
+    if apply_result.returncode != 0:
+        logger.warning(f"Failed to re-apply stash {stash_ref}. Manual resolution required.")
+        if apply_result.stdout:
+            logger.warning(apply_result.stdout.strip()[-1000:])
+        if apply_result.stderr:
+            logger.warning(apply_result.stderr.strip()[-1000:])
+        return False
+    drop_result = _run_git_command(["git", "stash", "drop", stash_ref])
+    if drop_result.returncode != 0:
+        logger.warning(f"Failed to drop stash {stash_ref} after apply.")
+        if drop_result.stdout:
+            logger.warning(drop_result.stdout.strip()[-1000:])
+        if drop_result.stderr:
+            logger.warning(drop_result.stderr.strip()[-1000:])
         return False
     return True
+
+
+def handle_dirty_working_tree(policy: str) -> tuple[bool, Optional[str]]:
+    """Handle a dirty working tree based on policy. Returns (proceed, stash_ref)."""
+    if working_tree_is_clean():
+        return True, None
+
+    normalized = (policy or DIRTY_POLICY_DEFAULT).strip().lower()
+    if normalized == DIRTY_POLICY_SKIP:
+        logger.warning("Working tree is not clean. Skipping self-improve.")
+        return False, None
+    if normalized == DIRTY_POLICY_COMMIT:
+        if commit_dirty_working_tree():
+            return True, None
+        logger.warning("Commit policy failed. Falling back to stash.")
+        normalized = DIRTY_POLICY_STASH
+    if normalized != DIRTY_POLICY_STASH:
+        logger.warning(f"Unknown dirty policy '{policy}'. Falling back to stash.")
+        normalized = DIRTY_POLICY_STASH
+
+    stash_ref = stash_working_tree()
+    if stash_ref:
+        return True, stash_ref
+    if working_tree_is_clean():
+        return True, None
+    logger.warning("Failed to stash dirty working tree. Skipping self-improve.")
+    return False, None
+
+def _bool_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes"}
+
+
+def _ensure_safe_directory(path: Path) -> None:
+    if _bool_env("AUTODNA_WORKTREE_SAFE_DIRECTORY", "1") or _bool_env("AUTODNA_GIT_SAFE_DIRECTORY", "0"):
+        _run_git_command(["git", "config", "--global", "--add", "safe.directory", str(path.resolve())])
+
+
+def _is_worktree_dir(path: Path) -> bool:
+    git_path = path / ".git"
+    return git_path.is_file() or git_path.is_dir()
+
+
+def _worktree_has_changes(path: Path) -> bool:
+    _ensure_safe_directory(path)
+    result = _run_git_command(["git", "status", "--porcelain"], cwd=path)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _stash_worktree(path: Path) -> bool:
+    _ensure_safe_directory(path)
+    message = f"autodna-self-improve-worktree-{path.name}-{int(time.time())}"
+    result = _run_git_command(["git", "stash", "push", "-u", "-m", message], cwd=path)
+    if result.returncode != 0:
+        logger.warning(f"Failed to stash changes in {path}.")
+        if result.stdout:
+            logger.warning(result.stdout.strip()[-1000:])
+        if result.stderr:
+            logger.warning(result.stderr.strip()[-1000:])
+        return False
+    return True
+
+
+def _commit_worktree(path: Path) -> bool:
+    _ensure_safe_directory(path)
+    add = _run_git_command(["git", "add", "-A"], cwd=path)
+    if add.returncode != 0:
+        logger.warning(f"Failed to stage changes in {path}.")
+        return False
+    diff = _run_git_command(["git", "diff", "--cached", "--quiet"], cwd=path)
+    if diff.returncode == 0:
+        return True
+    message = f"chore: snapshot worktree {path.name}"
+    commit = _run_git_command(["git", "commit", "-m", message], cwd=path)
+    if commit.returncode != 0:
+        logger.warning(f"Failed to commit changes in {path}.")
+        if commit.stdout:
+            logger.warning(commit.stdout.strip()[-1000:])
+        if commit.stderr:
+            logger.warning(commit.stderr.strip()[-1000:])
+        return False
+    return True
+
+
+def _handle_dirty_worktree(path: Path, policy: Optional[str]) -> bool:
+    normalized = (policy or DIRTY_POLICY_COMMIT).strip().lower()
+    if normalized == DIRTY_POLICY_KEEP:
+        return True
+    if normalized == DIRTY_POLICY_SKIP:
+        return False
+    if normalized == DIRTY_POLICY_STASH:
+        return _stash_worktree(path)
+    if normalized == DIRTY_POLICY_COMMIT:
+        if _commit_worktree(path):
+            return True
+        logger.warning(f"Failed to commit changes in {path}. Falling back to stash.")
+        return _stash_worktree(path)
+    logger.warning(f"Unknown worktree dirty policy '{policy}'. Falling back to stash.")
+    return _stash_worktree(path)
+
+
+def _active_workers(tasks: list[Dict[str, Any]]) -> set[str]:
+    active = set()
+    for task in tasks:
+        status = str(task.get("status", "")).lower()
+        if status != "in_progress":
+            continue
+        if not _heartbeat_fresh(task):
+            continue
+        assigned = task.get("assigned_to")
+        if isinstance(assigned, str) and assigned.strip():
+            active.add(assigned.strip())
+    return active
+
+
+def _prepare_worker_worktrees(policy: str, repo_root: Path) -> None:
+    tasks = _load_tasks()
+    active = {name.lower() for name in _active_workers(tasks)}
+    for name in WORKER_NAMES:
+        path = repo_root / name
+        if not path.exists():
+            continue
+        if not _is_worktree_dir(path):
+            logger.warning(f"Skipping {name}: not a git worktree directory.")
+            continue
+        if name.lower() in active:
+            logger.warning(f"Skipping cleanup for {name}; active task heartbeat detected.")
+            continue
+        if not _worktree_has_changes(path):
+            continue
+        handled = _handle_dirty_worktree(path, policy)
+        if not handled:
+            logger.warning(
+                f"Worktree {name} has uncommitted changes and policy '{policy}' skipped cleanup."
+            )
+
+
+def parse_gate_env(value: str) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def task_snapshot_from_json(queue_path: Path) -> dict:
+    if not queue_path.exists():
+        return {"last_sync": None, "counts": {"in_progress": 0, "backlog": 0, "done": 0}, "exists": False}
+    try:
+        data = json.loads(queue_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last_sync": None, "counts": {"in_progress": 0, "backlog": 0, "done": 0}, "exists": False}
+    tasks = data.get("tasks", [])
+    if not isinstance(tasks, list):
+        return {"last_sync": None, "counts": {"in_progress": 0, "backlog": 0, "done": 0}, "exists": False}
+
+    counts = {"in_progress": 0, "backlog": 0, "done": 0}
+    for task in tasks:
+        status = str(task.get("status", "")).lower()
+        if status == "in_progress":
+            counts["in_progress"] += 1
+        elif status in {"done", "completed", "info"}:
+            counts["done"] += 1
+        elif status in {"pending", "blocked", "error"}:
+            counts["backlog"] += 1
+        elif status:
+            counts["backlog"] += 1
+    return {"last_sync": None, "counts": counts, "exists": True}
+
+
+def _dogfood_report(label: str, notes: str, out_dir: Path) -> Path:
+    repo_root = Path(".").resolve()
+    memory_path = Path("agent/MEMORY.md")
+    memory_facts = dogfood.count_memory_facts(memory_path)
+    task_snapshot = task_snapshot_from_json(Path("agent/TASK_QUEUE.json"))
+    if not task_snapshot.get("exists"):
+        task_snapshot = dogfood.parse_task_queue(Path("agent/TASK_QUEUE.md"))
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    report = dogfood.build_report(
+        label=label,
+        timestamp=timestamp,
+        repo_root=repo_root,
+        notes=notes,
+        memory_facts=memory_facts,
+        task_snapshot=task_snapshot,
+        benchmark=None,
+    )
+    return dogfood.write_report(report, out_dir, label, timestamp)
+
+
+def _evaluate_dogfood(baseline_path: Path, after_path: Path, gates: list[str]) -> tuple[bool, str]:
+    if not gates:
+        return True, "No dogfood gates configured."
+    baseline = dogfood.parse_report(baseline_path)
+    after = dogfood.parse_report(after_path)
+    deltas = dogfood.compare_reports(baseline, after)
+    failures = dogfood.evaluate_gates(after, deltas, gates)
+    summary = dogfood.format_compare_summary(
+        baseline_path=baseline_path,
+        after_path=after_path,
+        baseline=baseline,
+        after=after,
+        deltas=deltas,
+        gates=gates,
+        failures=failures,
+    )
+    return not failures, summary
 
 def _load_tasks() -> list[Dict[str, Any]]:
     if not TASK_QUEUE_FILE.exists():
@@ -63,6 +384,26 @@ def _task_by_id(tasks: list[Dict[str, Any]]) -> dict[int, Dict[str, Any]]:
     return {t.get("id"): t for t in tasks if isinstance(t.get("id"), int)}
 
 
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def _heartbeat_fresh(task: Dict[str, Any], ttl_seconds: int = HEARTBEAT_TTL_SECONDS) -> bool:
+    heartbeat = _parse_iso(task.get("heartbeat_at"))
+    if not heartbeat:
+        return False
+    now = datetime.now(timezone.utc)
+    return now - heartbeat <= timedelta(seconds=ttl_seconds)
+
+
 def _is_blocked(task: Dict[str, Any], by_id: dict[int, Dict[str, Any]]) -> bool:
     blocked_by = task.get("blocked_by")
     if blocked_by is None:
@@ -70,7 +411,12 @@ def _is_blocked(task: Dict[str, Any], by_id: dict[int, Dict[str, Any]]) -> bool:
     blocker = by_id.get(blocked_by)
     if not blocker:
         return False
-    return blocker.get("status") not in ("done", "info")
+    status = str(blocker.get("status", "")).lower()
+    if status in UNBLOCKED_STATUSES:
+        return False
+    if _heartbeat_fresh(blocker):
+        return True
+    return False
 
 
 def get_next_task() -> Optional[Dict[str, Any]]:
@@ -112,10 +458,7 @@ def get_retry_task() -> Optional[Dict[str, Any]]:
     return None
 
 
-def select_next_task(always_taskgen: bool) -> Optional[Dict[str, Any]]:
-    if always_taskgen:
-        _run_taskgen_if_available()
-
+def _select_actionable_task() -> Optional[Dict[str, Any]]:
     task = get_next_task()
     if task:
         return task
@@ -125,29 +468,97 @@ def select_next_task(always_taskgen: bool) -> Optional[Dict[str, Any]]:
         update_task_status(retry_task["id"], "pending", "Auto-retry after error.")
         return retry_task
 
+    return None
+
+
+def select_next_task(always_taskgen: bool) -> Optional[Dict[str, Any]]:
+    if always_taskgen:
+        _run_taskgen_if_available()
+
+    task = _select_actionable_task()
+    if task:
+        return task
+
     if not always_taskgen:
         logger.info("No actionable tasks found. Attempting task generation.")
         if _run_taskgen_if_available():
-            return get_next_task()
+            return _select_actionable_task()
 
     return None
 
 
-def _run_taskgen_if_available() -> bool:
-    command = [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"]
+def _run_cli_step(command: list[str], label: str, timeout_seconds: int) -> bool:
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
-    except Exception as exc:
-        logger.warning(f"Task generation failed to launch: {exc}")
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"{label} timed out after {timeout_seconds}s.")
         return False
+    except Exception as exc:
+        logger.warning(f"{label} failed to launch: {exc}")
+        return False
+
     if result.returncode != 0:
-        logger.warning("Task generation failed.")
+        logger.warning(f"{label} failed (exit code {result.returncode}).")
         if result.stdout:
             logger.warning(result.stdout.strip()[-1000:])
         if result.stderr:
             logger.warning(result.stderr.strip()[-1000:])
         return False
     return True
+
+
+def _run_taskgen_if_available() -> bool:
+    command = [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"]
+    return _run_cli_step(command, "Task generation", TASKGEN_TIMEOUT_SECONDS)
+
+
+def pick_research_topic() -> str:
+    env_topic = os.getenv("AUTODNA_SELF_IMPROVE_RESEARCH_TOPIC", "").strip()
+    if env_topic:
+        return env_topic
+    if not DEFAULT_RESEARCH_TOPICS:
+        return "latest state of the art AI coding agent system prompts and framework architecture 2026"
+    day_index = int(time.time() // 86400) % len(DEFAULT_RESEARCH_TOPICS)
+    return DEFAULT_RESEARCH_TOPICS[day_index]
+
+
+def bootstrap_queue(topic: Optional[str] = None) -> bool:
+    chosen_topic = topic or pick_research_topic()
+    logger.info("No actionable tasks. Bootstrapping research/taskgen/eval.")
+    logger.info(f"Auto-research topic: {chosen_topic}")
+
+    research_ok = _run_cli_step(
+        [sys.executable, "autodna/cli.py", "research", "--timestamped", chosen_topic],
+        "Auto-research",
+        RESEARCH_TIMEOUT_SECONDS,
+    )
+    if not research_ok:
+        logger.warning("Auto-research failed. Continuing.")
+
+    taskgen_ok = _run_cli_step(
+        [sys.executable, "autodna/cli.py", "taskgen", "--if-empty"],
+        "Auto-taskgen",
+        TASKGEN_TIMEOUT_SECONDS,
+    )
+    if not taskgen_ok:
+        logger.warning("Auto-taskgen failed. Continuing.")
+
+    eval_ok = _run_cli_step(
+        [sys.executable, "autodna/cli.py", "eval"],
+        "Auto-eval",
+        EVAL_TIMEOUT_SECONDS,
+    )
+    if not eval_ok:
+        logger.warning("Auto-eval failed. Continuing.")
+
+    return taskgen_ok
 
 def branch_exists(branch_name: str) -> bool:
     refs = [f"refs/heads/{branch_name}", f"refs/remotes/origin/{branch_name}"]
@@ -313,13 +724,24 @@ def run_swarm(task: Dict[str, Any], timeout_seconds=600) -> tuple[str, Optional[
         env = os.environ.copy()
         if "AUTODNA_PLATFORM" not in env and _detect_codex_env():
             env["AUTODNA_PLATFORM"] = "CODEX"
+        # Ensure worktrees resume without manual intervention during swarm runs.
+        env["AUTODNA_WORKTREE_RESUME"] = "1"
+        env["AUTODNA_WORKTREE_DIRTY_POLICY"] = "commit"
+        env["AUTODNA_WORKTREE_SAFE_DIRECTORY"] = "1"
+
+        repo_root = Path(__file__).resolve().parents[1]
+        worktree_policy = env.get("AUTODNA_WORKTREE_DIRTY_POLICY", DIRTY_POLICY_COMMIT)
+        _prepare_worker_worktrees(worktree_policy, repo_root)
+        pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{pythonpath}" if pythonpath else str(repo_root)
 
         process = subprocess.Popen(
-            ["python", "-m", "autodna.cli", "start", "--headless"],
+            [sys.executable, "autodna/core/engine_start.py", "--headless"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
+            cwd=str(repo_root),
             encoding="utf-8",
             errors="replace"
         )
@@ -460,73 +882,146 @@ def main():
     loop_enabled = args.loop or os.getenv("AUTODNA_SELF_IMPROVE_LOOP", "").lower() in {"1", "true", "yes"}
     max_cycles = max(1, args.max_cycles)
 
+    dogfood_enabled = os.getenv("AUTODNA_SELF_IMPROVE_DOGFOOD", "1").lower() in {"1", "true", "yes"}
+    dogfood_use_default = os.getenv("AUTODNA_SELF_IMPROVE_NO_DEFAULT_GATES", "").lower() not in {"1", "true", "yes"}
+    dogfood_extra_gates = parse_gate_env(os.getenv("AUTODNA_SELF_IMPROVE_GATES", ""))
+    dogfood_gates = (dogfood.DEFAULT_GATES if dogfood_use_default else []) + dogfood_extra_gates
+    dogfood_out_dir = Path(os.getenv("AUTODNA_SELF_IMPROVE_DOGFOOD_DIR", "agent/dogfood_reports"))
+    if dogfood_enabled:
+        logger.info(f"Dogfood gating enabled. Gates: {dogfood_gates or 'NONE'}")
+
     always_taskgen = os.getenv("AUTODNA_SELF_IMPROVE_ALWAYS_TASKGEN", "1").lower() in {"1", "true", "yes"}
+    auto_bootstrap = os.getenv("AUTODNA_SELF_IMPROVE_AUTO_BOOTSTRAP", "1").lower() in {"1", "true", "yes"}
+    bootstrap_attempted = False
+    dirty_policy = os.getenv("AUTODNA_SELF_IMPROVE_DIRTY_POLICY", DIRTY_POLICY_DEFAULT)
+    if args.dry_run:
+        proceed, stash_ref = True, None
+    else:
+        proceed, stash_ref = handle_dirty_working_tree(dirty_policy)
+        if not proceed:
+            sys.exit(0)
     cycles = 0
-    while True:
-        if not args.dry_run:
-            if not require_clean_working_tree():
+    try:
+        while True:
+            if not args.dry_run and not working_tree_is_clean():
+                logger.warning("Working tree became dirty during self-improve. Aborting.")
+                break
+
+            task = select_next_task(always_taskgen)
+            if not task and auto_bootstrap and not bootstrap_attempted:
+                bootstrap_attempted = True
+                bootstrap_queue()
+                task = _select_actionable_task()
+            if not task:
+                cycles += 1
+                if not loop_enabled or cycles >= max_cycles:
+                    break
+                logger.info("No tasks found after task generation. Restarting loop from the top.")
+                continue
+
+            assert task is not None # Tell type checker it's safe
+            bootstrap_attempted = False
+
+            preferred_base = args.base_branch or os.getenv("AUTODNA_SELF_IMPROVE_BASE")
+            base_branch = resolve_base_branch(preferred_base)
+            branch_name = f"chore/self-improve-task-{task['id']}"
+
+            if args.dry_run:
+                logger.info(f"[DRY RUN] Would check out branch: {branch_name}")
+                logger.info(f"[DRY RUN] Would start swarm for task {task['id']}")
+                logger.info("[DRY RUN] Would run pytest and commit if passed")
+                if dogfood_enabled:
+                    logger.info("[DRY RUN] Would generate dogfood baseline/after reports and evaluate gates")
                 sys.exit(0)
 
-        task = select_next_task(always_taskgen)
-        if not task:
-            cycles += 1
-            if not loop_enabled or cycles >= max_cycles:
-                break
-            logger.info("No tasks found after task generation. Restarting loop from the top.")
-            continue
+            try:
+                checkout_branch(branch_name, base_branch)
 
-        assert task is not None # Tell type checker it's safe
+                baseline_report = None
+                if dogfood_enabled:
+                    try:
+                        notes = f"task {task['id']}: {task['title']}"
+                        baseline_report = _dogfood_report(
+                            label=f"baseline-task-{task['id']}",
+                            notes=notes,
+                            out_dir=dogfood_out_dir,
+                        )
+                    except Exception as exc:
+                        logger.warning(f"Dogfood baseline failed: {exc}")
 
-        preferred_base = args.base_branch or os.getenv("AUTODNA_SELF_IMPROVE_BASE")
-        base_branch = resolve_base_branch(preferred_base)
-        branch_name = f"chore/self-improve-task-{task['id']}"
+                swarm_status, swarm_note = run_swarm(task)
 
-        if args.dry_run:
-            logger.info(f"[DRY RUN] Would check out branch: {branch_name}")
-            logger.info(f"[DRY RUN] Would start swarm for task {task['id']}")
-            logger.info("[DRY RUN] Would run pytest and commit if passed")
-            sys.exit(0)
+                if swarm_status == "done":
+                    tests_passed = run_tests()
+                    if tests_passed:
+                        dogfood_ok = True
+                        dogfood_summary = None
+                        if dogfood_enabled:
+                            if not baseline_report:
+                                dogfood_ok = False
+                                dogfood_summary = "Dogfood baseline report missing."
+                            else:
+                                try:
+                                    notes = f"task {task['id']}: {task['title']}"
+                                    after_report = _dogfood_report(
+                                        label=f"after-task-{task['id']}",
+                                        notes=notes,
+                                        out_dir=dogfood_out_dir,
+                                    )
+                                    dogfood_ok, dogfood_summary = _evaluate_dogfood(
+                                        baseline_report,
+                                        after_report,
+                                        dogfood_gates,
+                                    )
+                                except Exception as exc:
+                                    dogfood_ok = False
+                                    dogfood_summary = f"Dogfood evaluation failed: {exc}"
+                            if dogfood_summary:
+                                if dogfood_ok:
+                                    logger.info("\n" + dogfood_summary.strip())
+                                else:
+                                    logger.error("\n" + dogfood_summary.strip())
 
-        try:
-            checkout_branch(branch_name, base_branch)
-
-            swarm_status, swarm_note = run_swarm(task)
-
-            if swarm_status == "done":
-                tests_passed = run_tests()
-                if tests_passed:
-                    commit_changes(task)
-                    update_task_status(task["id"], "done")
-                    logger.info(f"Task {task['id']} completed successfully. Review branch {branch_name}.")
+                        if dogfood_ok:
+                            commit_changes(task)
+                            update_task_status(task["id"], "done")
+                            logger.info(f"Task {task['id']} completed successfully. Review branch {branch_name}.")
+                        else:
+                            logger.error("Dogfood gates failed. Rolling back changes.")
+                            rollback_changes()
+                            update_task_status(task["id"], "error", "Dogfood gates failed.")
+                    else:
+                        logger.error("Tests failed! Rolling back changes to prevent master corruption.")
+                        rollback_changes()
+                        update_task_status(task["id"], "error", "Tests failed after implementation.")
                 else:
-                    logger.error("Tests failed! Rolling back changes to prevent master corruption.")
+                    logger.error("Swarm failed to complete task.")
                     rollback_changes()
-                    update_task_status(task["id"], "error", "Tests failed after implementation.")
-            else:
-                logger.error("Swarm failed to complete task.")
+                    current_status, current_notes = _get_task_status(task["id"])
+                    if swarm_status == "blocked":
+                        if current_status != "blocked":
+                            update_task_status(task["id"], "blocked", swarm_note or current_notes)
+                    else:
+                        update_task_status(task["id"], "error", swarm_note or current_notes or "Swarm exited with error.")
+
+                subprocess.run(["git", "checkout", base_branch], check=True)
+
+            except Exception as e:
+                logger.exception("Catastrophic error in self-improve loop:")
                 rollback_changes()
-                current_status, current_notes = _get_task_status(task["id"])
-                if swarm_status == "blocked":
-                    if current_status != "blocked":
-                        update_task_status(task["id"], "blocked", swarm_note or current_notes)
-                else:
-                    update_task_status(task["id"], "error", swarm_note or current_notes or "Swarm exited with error.")
+                update_task_status(task["id"], "error", f"Self-improve script crashed: {e}")
+                subprocess.run(["git", "checkout", base_branch], check=True)
+                break
 
-            subprocess.run(["git", "checkout", base_branch], check=True)
-
-        except Exception as e:
-            logger.exception("Catastrophic error in self-improve loop:")
-            rollback_changes()
-            update_task_status(task["id"], "error", f"Self-improve script crashed: {e}")
-            subprocess.run(["git", "checkout", base_branch], check=True)
-            break
-
-        cycles += 1
-        if not loop_enabled:
-            break
-        if cycles >= max_cycles:
-            logger.info("Max self-improve cycles reached. Stopping.")
-            break
+            cycles += 1
+            if not loop_enabled:
+                break
+            if cycles >= max_cycles:
+                logger.info("Max self-improve cycles reached. Stopping.")
+                break
+    finally:
+        if stash_ref:
+            restore_stash(stash_ref)
 
 if __name__ == "__main__":
     main()

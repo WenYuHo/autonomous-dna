@@ -38,6 +38,7 @@ def test_claim_task_assigns_when_pending(tmp_path, monkeypatch, capsys):
     db = _load_db(db_path)
     assert db["tasks"][0]["status"] == "in_progress"
     assert db["tasks"][0]["assigned_to"] == "worker-1"
+    assert db["tasks"][0]["heartbeat_at"].endswith("Z")
 
 
 def test_claim_task_rejects_other_agent(tmp_path, monkeypatch, capsys):
@@ -118,3 +119,30 @@ def test_claim_task_rejects_completed(tmp_path, monkeypatch, capsys):
 
     db = _load_db(db_path)
     assert db["tasks"][0]["status"] == "completed"
+
+
+def test_complete_task_updates_heartbeat(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "agent" / "TASK_QUEUE.json"
+    _write_db(
+        db_path,
+        [
+            {
+                "id": 5,
+                "title": "Test",
+                "description": "desc",
+                "ref": "NONE",
+                "status": "in_progress",
+                "assigned_to": "worker-1",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(tasks, "DB_FILE", db_path)
+
+    tasks.complete_task(5)
+    out = capsys.readouterr().out
+    assert "marked as COMPLETED" in out
+
+    db = _load_db(db_path)
+    assert db["tasks"][0]["status"] == "completed"
+    assert db["tasks"][0]["heartbeat_at"].endswith("Z")

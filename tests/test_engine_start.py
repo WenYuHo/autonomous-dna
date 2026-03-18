@@ -6,6 +6,7 @@ Unit tests for autodna/core/engine_start.py — orchestrator script for swarm la
 import os
 import sys
 import unittest
+import subprocess
 from unittest.mock import patch, mock_open
 import pathlib
 from tempfile import TemporaryDirectory
@@ -97,13 +98,29 @@ class TestEngineStart(unittest.TestCase):
                         self.assertEqual(mock_junction.call_count, 4)
 
     @patch("pathlib.Path.exists")
-    def test_setup_worktree_blocks_diverged_branch(self, mock_exists):
+    def test_setup_worktree_allows_diverged_branch(self, mock_exists):
         mock_exists.return_value = False
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            with patch("autodna.core.engine_start._branch_exists", return_value=True):
+                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=False):
+                    with patch("autodna.core.engine_start._update_branch_to_head") as mock_update:
+                        engine_start.setup_worktree("worker-3")
+                        mock_update.assert_not_called()
 
-        with patch("autodna.core.engine_start._branch_exists", return_value=True):
-            with patch("autodna.core.engine_start._branch_is_ancestor", return_value=False):
-                with self.assertRaises(SystemExit):
-                    engine_start.setup_worktree("worker-3")
+    @patch("pathlib.Path.exists")
+    def test_setup_worktree_resumes_diverged_branch(self, mock_exists):
+        mock_exists.return_value = True
+
+        with patch("autodna.core.engine_start._is_worktree_dir", return_value=True):
+            with patch("autodna.core.engine_start._branch_exists", return_value=True):
+                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=False):
+                    with patch("autodna.core.engine_start._worktree_has_changes", return_value=False):
+                        with patch("autodna.core.engine_start._remove_worktree") as mock_remove:
+                            with patch("autodna.core.engine_start.setup_junction") as mock_junction:
+                                engine_start.setup_worktree("worker-3")
+                                mock_remove.assert_not_called()
+                                self.assertEqual(mock_junction.call_count, 4)
 
     @patch("subprocess.run")
     @patch("pathlib.Path.exists")
@@ -217,13 +234,72 @@ def test_manager_mission_uses_python_cli():
     mission = engine_start.build_manager_mission()
     assert "python -m autodna.cli" in mission
     assert "autodna tasks list" in mission
+    assert "Resume" in mission
 
 
 def test_worker_mission_uses_python_cli_and_folder():
-    mission = engine_start.build_worker_mission("Worker-1", "worker-1")
+    mission = engine_start.build_worker_mission("Worker-1", "worker-1", [3])
     assert "python -m autodna.cli" in mission
     assert "tasks claim <id> worker-1" in mission
     assert "Stay in worker-1 folder" in mission
+    assert "Resume assigned in-progress tasks first: 3" in mission
+
+
+def test_handle_dirty_worktree_keep_does_not_run_git(monkeypatch):
+    called = {"count": 0}
+
+    def fake_run_git(args, cwd=None):
+        called["count"] += 1
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
+    assert engine_start._handle_dirty_worktree(pathlib.Path("."), "keep") is True
+    assert called["count"] == 0
+
+
+def test_handle_dirty_worktree_stash_runs_git(monkeypatch):
+    calls = []
+
+    def fake_run_git(args, cwd=None):
+        calls.append(args)
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
+    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
+    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-1"), "stash") is True
+    assert any("stash" in arg for arg in calls[0])
+
+
+def test_handle_dirty_worktree_commit_runs_git(monkeypatch):
+    calls = []
+
+    def fake_run_git(args, cwd=None):
+        calls.append(args)
+        if args[:2] == ["diff", "--cached"]:
+            return subprocess.CompletedProcess(["git", *args], 1, "", "")
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
+    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
+    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-2"), "commit") is True
+    assert ["add", "-A"] in calls
+
+
+def test_handle_dirty_worktree_commit_falls_back_to_stash(monkeypatch):
+    calls = []
+
+    def fake_run_git(args, cwd=None):
+        calls.append(args)
+        if args[:2] == ["diff", "--cached"]:
+            return subprocess.CompletedProcess(["git", *args], 1, "", "")
+        if args[:2] == ["commit", "-m"]:
+            return subprocess.CompletedProcess(["git", *args], 1, "", "fail")
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
+    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
+    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-1"), "commit") is True
+    assert any(call[:4] == ["stash", "push", "-u", "-m"] for call in calls)
 
 
 if __name__ == "__main__":

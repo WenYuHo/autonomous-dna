@@ -179,6 +179,7 @@ def main() -> None:
             sys.executable,
             "autodna/cli.py",
             "research",
+            "--timestamped",
             "latest state of the art AI coding agent system prompts and framework architecture 2026",
         ],
         attempts=RESEARCH_RETRIES,

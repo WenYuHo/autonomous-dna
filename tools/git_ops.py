@@ -12,6 +12,8 @@ Usage:
 
 import subprocess
 import sys
+import os
+import shlex
 from datetime import datetime, timezone
 
 
@@ -24,17 +26,61 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 
 def branch_name(task_id: str) -> str:
-    return f"feat/{task_id.lower()}"
+    prefix = os.environ.get("AUTODNA_GIT_BRANCH_PREFIX", "feat/")
+    return f"{prefix}{task_id.lower()}"
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _bool_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes"}
+
+
+def _branch_exists(branch_name: str) -> bool:
+    local = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"], check=False)
+    if local.returncode == 0:
+        return True
+    remote = run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch_name}"], check=False)
+    return remote.returncode == 0
+
+
+def resolve_base_branch() -> str:
+    env_branch = os.environ.get("AUTODNA_GIT_BASE_BRANCH") or os.environ.get("AUTODNA_BASE_BRANCH")
+    candidates = [env_branch, "main", "dev", "master"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if _branch_exists(candidate):
+            return candidate
+    return "main"
+
+
+def _parse_command(command: str) -> list[str]:
+    return shlex.split(command, posix=(os.name != "nt"))
+
+
+def run_tests() -> None:
+    test_cmd = os.environ.get("AUTODNA_GIT_TEST_CMD", "python -m pytest tests/")
+    if not test_cmd.strip():
+        return
+    print(f"Running tests before push: {test_cmd}")
+    result = run(_parse_command(test_cmd), check=False)
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+    if result.returncode != 0:
+        print("Tests failed. Aborting push.")
+        sys.exit(1)
+
+
 def cmd_init(task_id: str) -> None:
     run(["git", "fetch", "origin"])
-    run(["git", "checkout", "main"])
-    run(["git", "pull", "origin", "main"])
+    base_branch = resolve_base_branch()
+    run(["git", "checkout", base_branch])
+    run(["git", "pull", "origin", base_branch])
     branch = branch_name(task_id)
     result = run(["git", "checkout", "-b", branch], check=False)
     if result.returncode != 0:
@@ -49,33 +95,37 @@ def cmd_commit(task_id: str, message: str) -> None:
     if result.returncode == 0:
         print("Nothing to commit.")
         return
+    run_tests()
     run(["git", "commit", "-m", f"{message}\n\nTASK_ID: {task_id}"])
     branch = branch_name(task_id)
-    run(["git", "push", "origin", branch])
-    print(f"Committed and pushed: {branch}")
+    base_branch = resolve_base_branch()
+    run(["git", "fetch", "origin"])
+    _rebase_with_retry(task_id, base_branch)
+    print(f"Committed, rebased, and pushed: {branch}")
 
 
 def cmd_pr(task_id: str) -> None:
     branch = branch_name(task_id)
+    base_branch = resolve_base_branch()
 
     # Check if behind main
     run(["git", "fetch", "origin"])
     result = run(
-        ["git", "rev-list", "--count", f"origin/main..{branch}"],
+        ["git", "rev-list", "--count", f"origin/{base_branch}..{branch}"],
         check=False,
     )
     behind = run(
-        ["git", "rev-list", "--count", f"{branch}..origin/main"],
+        ["git", "rev-list", "--count", f"{branch}..origin/{base_branch}"],
         check=False,
     ).stdout.strip()
 
     if behind and int(behind) > 0:
-        print(f"Branch is {behind} commit(s) behind main. Rebasing...")
-        _rebase_with_retry(task_id)
+        print(f"Branch is {behind} commit(s) behind {base_branch}. Rebasing...")
+        _rebase_with_retry(task_id, base_branch)
 
     # Open PR via GitHub CLI
     result = run(
-        ["gh", "pr", "create", "--fill", "--base", "main", "--head", branch],
+        ["gh", "pr", "create", "--fill", "--base", base_branch, "--head", branch],
         check=False,
     )
     if result.returncode != 0:
@@ -85,10 +135,10 @@ def cmd_pr(task_id: str) -> None:
         print(f"PR opened: {result.stdout.strip()}")
 
 
-def _rebase_with_retry(task_id: str, max_attempts: int = 3) -> None:
+def _rebase_with_retry(task_id: str, base_branch: str, max_attempts: int = 3) -> None:
     branch = branch_name(task_id)
     for attempt in range(1, max_attempts + 1):
-        result = run(["git", "rebase", "origin/main"], check=False)
+        result = run(["git", "rebase", f"origin/{base_branch}"], check=False)
         if result.returncode == 0:
             run(["git", "push", "--force-with-lease", "origin", branch])
             return
