@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timezone, timedelta
 
 from autodna.tools import taskgen
@@ -26,6 +26,12 @@ def test_taskgen_creates_tasks_when_empty(tmp_path):
     assert tasks[1]["ref"] == str(artifact_path)
     assert tasks[2]["blocked_by"] == tasks[1]["id"]
     assert tasks[3]["blocked_by"] == tasks[2]["id"]
+
+    # Verify Recipe and Acceptance Criteria are present in descriptions
+    for i in [1, 2, 3]:
+        desc = tasks[i].get("description", "")
+        assert "Recipe:" in desc
+        assert "Acceptance Criteria:" in desc
 
 
 def test_taskgen_skips_when_actionable(tmp_path):
@@ -139,25 +145,45 @@ def test_has_actionable_tasks_error_unblocked():
     assert taskgen.has_actionable_tasks(tasks) is True
 
 
-def test_has_actionable_tasks_treats_blocked_when_blocker_not_active():
+def test_has_actionable_tasks_is_blocked_by_pending():
     tasks = [
         {
             "id": 1,
-            "title": "CYCLE 1 - AUTOGEN: Research Synthesis",
+            "title": "[RESEARCH] Pending blocker",
             "status": "pending",
         },
         {
             "id": 2,
             "title": "[IMPROVE] Blocked task",
-            "status": "blocked",
+            "status": "pending",
             "blocked_by": 1,
         },
     ]
 
+    # Task 1 is actionable. Task 2 is blocked.
     assert taskgen.has_actionable_tasks(tasks) is True
 
 
-def test_has_actionable_tasks_true_when_blocker_active_heartbeat():
+def test_has_actionable_tasks_is_blocked_by_error():
+    tasks = [
+        {
+            "id": 1,
+            "title": "[RESEARCH] Error blocker",
+            "status": "error",
+        },
+        {
+            "id": 2,
+            "title": "[IMPROVE] Blocked task",
+            "status": "pending",
+            "blocked_by": 1,
+        },
+    ]
+
+    # Task 1 is actionable (retry candidate). Task 2 is blocked.
+    assert taskgen.has_actionable_tasks(tasks) is True
+
+
+def test_has_actionable_tasks_false_when_all_blocked_by_active_heartbeat():
     now = datetime.now(timezone.utc)
     tasks = [
         {
@@ -175,6 +201,7 @@ def test_has_actionable_tasks_true_when_blocker_active_heartbeat():
         },
     ]
 
+    # Task 1 is already in_progress and heartbeat is fresh.
     assert taskgen.has_actionable_tasks(tasks) is True
 
 
