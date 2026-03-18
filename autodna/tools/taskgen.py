@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import json
 import os
 import re
@@ -147,9 +147,15 @@ def build_cycle_tasks(
         "id": research_id,
         "title": "[RESEARCH] Synthesize improvements from latest research",
         "description": (
-            "Review the latest research artifact and extract 3 candidate improvements. "
-            "For each, include the evidence/source, expected benefit, and an initial test plan. "
-            "Update the IMPROVE/EVAL tasks below with concrete acceptance criteria."
+            "Review the latest research artifact and extract 3 candidate improvements.\n\n"
+            "Recipe:\n"
+            "1. Read the provided research artifact.\n"
+            "2. Identify 3 distinct high-value technical improvements.\n"
+            "3. For each, document the evidence, benefit, and a test plan.\n"
+            "4. Update the descriptions of the subsequent [IMPROVE] and [EVAL] tasks in TASK_QUEUE.json with concrete criteria.\n\n"
+            "Acceptance Criteria:\n"
+            "- 3 improvements extracted with full metadata.\n"
+            "- Future tasks in this cycle updated with implementation details."
         ),
         "ref": artifact_ref,
         "status": "pending",
@@ -162,8 +168,15 @@ def build_cycle_tasks(
         "id": improve_id,
         "title": "[IMPROVE] Implement highest-value improvement",
         "description": (
-            "Implement the top-ranked improvement from the synthesis task. "
-            "Update tests and docs as needed. Run the test suite before marking done."
+            "Implement the top-ranked improvement from the synthesis task.\n\n"
+            "Recipe:\n"
+            "1. Review the acceptance criteria added by the [RESEARCH] task.\n"
+            "2. Implement the changes in the main workspace.\n"
+            "3. Update or add tests to verify the new functionality.\n"
+            "4. Run the full test suite to ensure no regressions.\n\n"
+            "Acceptance Criteria:\n"
+            "- Feature implemented according to research specs.\n"
+            "- All tests pass successfully."
         ),
         "ref": artifact_ref,
         "status": "pending",
@@ -177,8 +190,14 @@ def build_cycle_tasks(
         "id": eval_id,
         "title": "[EVAL] Validate improvement impact",
         "description": (
-            "Evaluate the implemented improvement using existing eval tools or reports. "
-            "Record results in agent/reports and note whether to keep or revert."
+            "Evaluate the implemented improvement using existing eval tools or reports.\n\n"
+            "Recipe:\n"
+            "1. Run the evaluation suite or baseline/after comparisons.\n"
+            "2. Record the quantitative and qualitative results.\n"
+            "3. Decide whether to keep the improvement or revert based on impact.\n\n"
+            "Acceptance Criteria:\n"
+            "- Evaluation report generated in agent/reports.\n"
+            "- Clear recommendation (keep/revert) documented."
         ),
         "ref": artifact_ref,
         "status": "pending",
