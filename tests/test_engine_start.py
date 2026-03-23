@@ -1,306 +1,100 @@
-"""
-tests/test_engine_start.py
-Unit tests for autodna/core/engine_start.py — orchestrator script for swarm launch.
-"""
-
 import os
-import sys
-import unittest
-import subprocess
-from unittest.mock import patch, mock_open
 import pathlib
-from tempfile import TemporaryDirectory
+import sys
+from unittest.mock import mock_open, patch
 
 from autodna.core import engine_start
 
 
-class TestEngineStart(unittest.TestCase):
-
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    def test_setup_junction_creates_link(self, mock_exists, mock_run):
-        # root folder exists, target doesn't -> should create junction
-        def mock_exists_logic(path):
-            if "target" in str(path):
-                return False
-            return True
-        mock_exists.side_effect = mock_exists_logic
-
-        with patch("os.getcwd", return_value="mock_root"):
-            engine_start.setup_junction("mock_target", "folder")
-
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("mklink /J", cmd)
-        self.assertIn("folder", cmd)
-
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    def test_setup_junction_skips_if_exists(self, mock_exists, mock_run):
-        # target already exists -> no op
-        mock_exists.return_value = True
-
-        engine_start.setup_junction("target", "folder")
-        mock_run.assert_not_called()
-
-    @patch("subprocess.run")
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_runs_git(self, mock_exists, mock_run):
-        # name dir doesn't exist
-        mock_exists.return_value = False
-        mock_run.return_value.returncode = 0
-
-        with patch("autodna.core.engine_start.setup_junction") as mock_junction:
-            with patch("autodna.core.engine_start._branch_exists", return_value=False):
-                engine_start.setup_worktree("worker-3")
-
-            mock_run.assert_called_once_with(
-                ["git", "worktree", "add", "worker-3", "-b", "autodna-worker-3"],
-                shell=False,
-            )
-
-            # Should setup 4 junctions
-            self.assertEqual(mock_junction.call_count, 4)
-            calls = mock_junction.call_args_list
-            self.assertEqual(calls[0][0], ("worker-3", ".venv"))
-            self.assertEqual(calls[1][0], ("worker-3", "node_modules"))
-            self.assertEqual(calls[2][0], ("worker-3", "models"))
-            self.assertEqual(calls[3][0], ("worker-3", "agent"))
-            self.assertEqual(calls[3][1], {"force": True})
-
-    @patch("subprocess.run")
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_fails(self, mock_exists, mock_run):
-        mock_exists.return_value = False
-        mock_run.return_value.returncode = 128
-
-        with patch("autodna.core.engine_start._branch_exists", return_value=False):
-            with self.assertRaises(SystemExit):
-                engine_start.setup_worktree("worker-3")
-
-    @patch("subprocess.run")
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_refreshes_branch(self, mock_exists, mock_run):
-        mock_exists.return_value = False
-        mock_run.return_value.returncode = 0
-
-        with patch("autodna.core.engine_start.setup_junction") as mock_junction:
-            with patch("autodna.core.engine_start._branch_exists", return_value=True):
-                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=True):
-                    with patch("autodna.core.engine_start._update_branch_to_head", return_value=True) as mock_update:
-                        engine_start.setup_worktree("worker-3")
-
-                        mock_update.assert_called_once_with("autodna-worker-3", "HEAD")
-                        mock_run.assert_called_once_with(
-                            ["git", "worktree", "add", "worker-3", "autodna-worker-3"],
-                            shell=False,
-                        )
-                        self.assertEqual(mock_junction.call_count, 4)
-
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_allows_diverged_branch(self, mock_exists):
-        mock_exists.return_value = False
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 0
-            with patch("autodna.core.engine_start._branch_exists", return_value=True):
-                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=False):
-                    with patch("autodna.core.engine_start._update_branch_to_head") as mock_update:
-                        engine_start.setup_worktree("worker-3")
-                        mock_update.assert_not_called()
-
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_resumes_diverged_branch(self, mock_exists):
-        mock_exists.return_value = True
-
-        with patch("autodna.core.engine_start._is_worktree_dir", return_value=True):
-            with patch("autodna.core.engine_start._branch_exists", return_value=True):
-                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=False):
-                    with patch("autodna.core.engine_start._worktree_has_changes", return_value=False):
-                        with patch("autodna.core.engine_start._remove_worktree") as mock_remove:
-                            with patch("autodna.core.engine_start.setup_junction") as mock_junction:
-                                engine_start.setup_worktree("worker-3")
-                                mock_remove.assert_not_called()
-                                self.assertEqual(mock_junction.call_count, 4)
-
-    @patch("subprocess.run")
-    @patch("pathlib.Path.exists")
-    def test_setup_worktree_refreshes_existing_worktree(self, mock_exists, mock_run):
-        mock_exists.side_effect = [True, False]
-        mock_run.return_value.returncode = 0
-
-        with patch("autodna.core.engine_start._is_worktree_dir", return_value=True):
-            with patch("autodna.core.engine_start._branch_exists", return_value=True):
-                with patch("autodna.core.engine_start._branch_is_ancestor", return_value=True):
-                    with patch("autodna.core.engine_start._worktree_has_changes", return_value=False):
-                        with patch("autodna.core.engine_start._remove_worktree", return_value=True) as mock_remove:
-                            with patch("autodna.core.engine_start._update_branch_to_head", return_value=True):
-                                with patch("autodna.core.engine_start.setup_junction") as mock_junction:
-                                    engine_start.setup_worktree("worker-3")
-
-                                    mock_remove.assert_called_once_with("worker-3")
-                                    mock_run.assert_called_once_with(
-                                        ["git", "worktree", "add", "worker-3", "autodna-worker-3"],
-                                        shell=False,
-                                    )
-                                    self.assertEqual(mock_junction.call_count, 4)
-
-    @patch("subprocess.run")
-    def test_launch_agent_interactive(self, mock_run):
-        result = engine_start.launch_agent("test-agent", "Do stuff", color="0C", headless=False)
-        self.assertIsNone(result)
-
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("start \"AUTODNA-test-agent\" cmd /k", cmd)
-        self.assertIn("color 0C", cmd)
-        self.assertIn("cd test-agent", cmd)
-        self.assertIn("Do stuff", cmd)
-        self.assertIn("GPU SAFETY", cmd)
-
-    @patch("subprocess.Popen")
-    def test_launch_agent_headless(self, mock_popen):
-        m = mock_open()
-        with patch("builtins.open", m):
-            with patch.object(pathlib.Path, "cwd", return_value=pathlib.Path("/tmp")):
-                result = engine_start.launch_agent("worker-1", "Headless mission", headless=True)
-
-                # Should return path to log file
-                self.assertEqual(str(result), os.path.normpath("/tmp/agent/worker-1.log"))
-
-                # Should have opened log file for writing
-                m.assert_called_once_with(os.path.normpath("/tmp/agent/worker-1.log"), "w", encoding="utf-8")
-
-                # Should have used Popen
-                mock_popen.assert_called_once()
-                cmd_list = mock_popen.call_args[0][0]
-                self.assertEqual(cmd_list[0], "python")
-                self.assertEqual(cmd_list[2], "autodna.core.agent_runner")
-                self.assertEqual(cmd_list[3], "worker-1")
-                self.assertIn("Headless mission", cmd_list[4])
-
-    @patch("autodna.core.engine_start.launch_agent")
-    @patch("autodna.core.engine_start.setup_worktree")
-    @patch("os.path.exists")
-    @patch("os.remove")
-    @patch("time.sleep")
-    def test_main_interactiveflow(self, mock_sleep, mock_remove, mock_exists, mock_setup, mock_launch):
-        # Simulate lock file existing
-        mock_exists.return_value = True
-
-        with patch.object(sys, "argv", ["engine_start.py"]):
-            engine_start.main()
-
-            # Removed lock
-            mock_remove.assert_called_once()
-
-            # Sub-agents set up
-            self.assertEqual(mock_setup.call_count, 2)
-            mock_setup.assert_any_call("worker-1")
-            mock_setup.assert_any_call("worker-2")
-
-            # 3 agents launched
-            self.assertEqual(mock_launch.call_count, 3)
-            calls = mock_launch.call_args_list
-
-            # First is manager (.)
-            self.assertEqual(calls[0][0][0], ".")
-            self.assertFalse(calls[0][1].get("headless", True))
-
-            # Then workers
-            self.assertEqual(calls[1][0][0], "worker-1")
-            self.assertEqual(calls[2][0][0], "worker-2")
+def test_resolve_platform_prefers_env(monkeypatch):
+    monkeypatch.setenv("AUTODNA_PLATFORM", "CODEX")
+    assert engine_start.resolve_platform() == "CODEX"
 
 
-def test_is_worktree_dir_false_when_missing():
-    with TemporaryDirectory() as tmp:
-        assert not engine_start._is_worktree_dir(pathlib.Path(tmp))
+def test_resolve_platform_uses_active_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("AUTODNA_PLATFORM", raising=False)
+    active = tmp_path / "platform" / "ACTIVE"
+    active.parent.mkdir(parents=True)
+    active.write_text("ANTIGRAVITY\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert engine_start.resolve_platform() == "ANTIGRAVITY"
 
 
-def test_is_worktree_dir_true_for_git_dir():
-    with TemporaryDirectory() as tmp:
-        path = pathlib.Path(tmp)
-        (path / ".git").mkdir()
-        assert engine_start._is_worktree_dir(path)
+def test_build_agent_mission_for_specific_task():
+    mission = engine_start.build_agent_mission("autodna", 12)
+    assert "Single-Agent Mode" in mission
+    assert "task 12" in mission
+    assert "tasks claim 12 autodna" in mission
+    assert "tasks complete 12" in mission
 
 
-def test_is_worktree_dir_true_for_git_file():
-    with TemporaryDirectory() as tmp:
-        path = pathlib.Path(tmp)
-        (path / ".git").write_text("gitdir: /fake/path")
-        assert engine_start._is_worktree_dir(path)
+def test_build_agent_mission_without_task():
+    mission = engine_start.build_agent_mission("autodna")
+    assert "Resume any task already assigned to you" in mission
+    assert "tasks claim <id> autodna" in mission
+    assert "Stay in the main workspace" in mission
 
 
-def test_manager_mission_uses_python_cli():
-    mission = engine_start.build_manager_mission()
-    assert "python -m autodna.cli" in mission
-    assert "autodna tasks list" in mission
-    assert "Resume" in mission
+@patch("subprocess.run")
+def test_launch_agent_interactive(mock_run):
+    result = engine_start.launch_agent("test-agent", "Do stuff", color="0C", headless=False)
+    assert result is None
+
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert 'start "AUTODNA-test-agent" cmd /k' in cmd
+    assert "color 0C" in cmd
+    assert "python -m autodna.core.agent_runner test-agent" in cmd
+    assert "Do stuff" in cmd
+    assert "GPU SAFETY" in cmd
 
 
-def test_worker_mission_uses_python_cli_and_folder():
-    mission = engine_start.build_worker_mission("Worker-1", "worker-1", [3])
-    assert "python -m autodna.cli" in mission
-    assert "tasks claim <id> worker-1" in mission
-    assert "Stay in worker-1 folder" in mission
-    assert "Resume assigned in-progress tasks first: 3" in mission
+@patch("subprocess.Popen")
+def test_launch_agent_headless(mock_popen):
+    m = mock_open()
+    with patch("builtins.open", m):
+        with patch.object(pathlib.Path, "cwd", return_value=pathlib.Path("/tmp")):
+            result = engine_start.launch_agent("agent one", "Headless mission", headless=True)
+
+    assert str(result) == os.path.normpath("/tmp/agent/agent-one.log")
+    m.assert_called_once_with(os.path.normpath("/tmp/agent/agent-one.log"), "w", encoding="utf-8")
+
+    mock_popen.assert_called_once()
+    cmd_list = mock_popen.call_args[1]["args"] if "args" in mock_popen.call_args[1] else mock_popen.call_args[0][0]
+    assert cmd_list[0] == "python"
+    assert cmd_list[2] == "autodna.core.agent_runner"
+    assert cmd_list[3] == "agent-one"
+    assert "Headless mission" in cmd_list[4]
 
 
-def test_handle_dirty_worktree_keep_does_not_run_git(monkeypatch):
-    called = {"count": 0}
+@patch("autodna.core.engine_start.launch_agent")
+@patch("os.path.exists")
+@patch("pathlib.Path.exists")
+@patch("pathlib.Path.unlink")
+def test_main_interactive_flow(mock_unlink, mock_gpu_exists, mock_git_exists, mock_launch):
+    mock_git_exists.return_value = True
+    mock_gpu_exists.return_value = True
 
-    def fake_run_git(args, cwd=None):
-        called["count"] += 1
-        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+    with patch.object(sys, "argv", ["engine_start.py"]):
+        engine_start.main()
 
-    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
-    assert engine_start._handle_dirty_worktree(pathlib.Path("."), "keep") is True
-    assert called["count"] == 0
-
-
-def test_handle_dirty_worktree_stash_runs_git(monkeypatch):
-    calls = []
-
-    def fake_run_git(args, cwd=None):
-        calls.append(args)
-        return subprocess.CompletedProcess(["git", *args], 0, "", "")
-
-    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
-    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
-    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-1"), "stash") is True
-    assert any("stash" in arg for arg in calls[0])
+    mock_unlink.assert_called_once()
+    mock_launch.assert_called_once()
+    assert mock_launch.call_args[0][0] == "autodna"
+    assert mock_launch.call_args[1]["headless"] is False
 
 
-def test_handle_dirty_worktree_commit_runs_git(monkeypatch):
-    calls = []
+@patch("autodna.core.engine_start.launch_agent")
+@patch("os.path.exists")
+@patch("pathlib.Path.exists")
+def test_main_headless_flow(mock_gpu_exists, mock_git_exists, mock_launch):
+    mock_git_exists.return_value = True
+    mock_gpu_exists.return_value = False
+    mock_launch.return_value = pathlib.Path("/tmp/agent/autodna.log")
 
-    def fake_run_git(args, cwd=None):
-        calls.append(args)
-        if args[:2] == ["diff", "--cached"]:
-            return subprocess.CompletedProcess(["git", *args], 1, "", "")
-        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+    with patch.object(sys, "argv", ["engine_start.py", "--headless", "--agent-name", "codex", "--task-id", "17"]):
+        engine_start.main()
 
-    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
-    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
-    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-2"), "commit") is True
-    assert ["add", "-A"] in calls
-
-
-def test_handle_dirty_worktree_commit_falls_back_to_stash(monkeypatch):
-    calls = []
-
-    def fake_run_git(args, cwd=None):
-        calls.append(args)
-        if args[:2] == ["diff", "--cached"]:
-            return subprocess.CompletedProcess(["git", *args], 1, "", "")
-        if args[:2] == ["commit", "-m"]:
-            return subprocess.CompletedProcess(["git", *args], 1, "", "fail")
-        return subprocess.CompletedProcess(["git", *args], 0, "", "")
-
-    monkeypatch.setattr(engine_start, "_run_git", fake_run_git)
-    monkeypatch.setattr(engine_start, "_ensure_safe_directory", lambda path: None)
-    assert engine_start._handle_dirty_worktree(pathlib.Path("worker-1"), "commit") is True
-    assert any(call[:4] == ["stash", "push", "-u", "-m"] for call in calls)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    assert mock_launch.call_args[0][0] == "codex"
+    assert "task 17" in mock_launch.call_args[0][1]
+    assert mock_launch.call_args[1]["headless"] is True

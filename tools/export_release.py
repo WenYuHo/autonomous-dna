@@ -23,8 +23,6 @@ DEFAULT_EXCLUDES = [
     "tools/",
     "scripts/",
     "tests/",
-    "worker-1/",
-    "worker-2/",
     "autodna.egg-info/",
     ".pytest_cache/",
     ".ruff_cache/",

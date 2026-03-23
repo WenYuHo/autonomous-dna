@@ -2,8 +2,20 @@ import sys
 import argparse
 import pkgutil
 import importlib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "start":
+        from autodna.core import engine_start
+
+        sys.argv = ["autodna start", *sys.argv[2:]]
+        engine_start.main()
+        return
+
     parser = argparse.ArgumentParser(description="Autonomous DNA Global CLI")
     subparsers = parser.add_subparsers(dest="command", help="The command to run")
 

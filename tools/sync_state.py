@@ -11,8 +11,15 @@ from pathlib import Path
 
 DB_FILE = Path("agent/TASK_QUEUE.json")
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def load_db():
     if not DB_FILE.exists():
@@ -20,62 +27,83 @@ def load_db():
         sys.exit(1)
     try:
         return json.loads(DB_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"ERROR: Failed to read {DB_FILE}: {e}")
+    except Exception as exc:
+        print(f"ERROR: Failed to read {DB_FILE}: {exc}")
         sys.exit(1)
+
 
 def save_db(db):
     DB_FILE.write_text(json.dumps(db, indent=2), encoding="utf-8")
 
+
+def _assignee(task):
+    assigned_to = task.get("assigned_to")
+    if isinstance(assigned_to, str):
+        assigned_to = assigned_to.strip()
+    return assigned_to or None
+
+
 def reserve(task_id: int, agent_id: str):
     db = load_db()
-    for t in db.get("tasks", []):
-        if t.get("id") == task_id:
-            if t.get("status") in {"completed", "done"}:
-                print(f"ERROR: Task {task_id} is already completed.")
-                sys.exit(1)
-            assigned = t.get("assigned_to")
-            if assigned and assigned != agent_id:
-                print(f"ERROR: Task {task_id} is already reserved by {assigned}.")
-                sys.exit(1)
-            
-            t["status"] = "in_progress"
-            t["assigned_to"] = agent_id
-            t["updated_at"] = now_iso()
-            save_db(db)
-            print(f"✅ Reserved Task #{task_id} for {agent_id}")
-            return
+    for task in db.get("tasks", []):
+        if task.get("id") != task_id:
+            continue
+        if str(task.get("status", "")).lower() in {"completed", "done"}:
+            print(f"ERROR: Task {task_id} is already completed.")
+            sys.exit(1)
+        assigned = _assignee(task)
+        if assigned and assigned != agent_id:
+            print(f"ERROR: Task {task_id} is already reserved by {assigned}.")
+            sys.exit(1)
+
+        task["status"] = "in_progress"
+        task["assigned_to"] = agent_id
+        task["updated_at"] = now_iso()
+        task["heartbeat_at"] = now_iso()
+        save_db(db)
+        print(f"[OK] Reserved Task #{task_id} for {agent_id}")
+        return
     print(f"ERROR: Task {task_id} not found.")
     sys.exit(1)
 
+
 def mark_done(task_id: int):
     db = load_db()
-    for t in db.get("tasks", []):
-        if t.get("id") == task_id:
-            t["status"] = "completed"
-            t["updated_at"] = now_iso()
-            save_db(db)
-            print(f"✅ Task #{task_id} marked as COMPLETED")
-            return
+    for task in db.get("tasks", []):
+        if task.get("id") != task_id:
+            continue
+        task["status"] = "completed"
+        task["updated_at"] = now_iso()
+        task["heartbeat_at"] = now_iso()
+        save_db(db)
+        print(f"[OK] Task #{task_id} marked as COMPLETED")
+        return
     print(f"ERROR: Task {task_id} not found.")
     sys.exit(1)
+
 
 def status():
     db = load_db()
     tasks = db.get("tasks", [])
-    in_progress = [t for t in tasks if t.get("status") == "in_progress"]
-    available = [t for t in tasks if t.get("status") == "pending"]
-    completed = [t for t in tasks if t.get("status") in {"completed", "done"}]
+    in_progress = [task for task in tasks if str(task.get("status", "")).lower() == "in_progress"]
+    available = [task for task in tasks if str(task.get("status", "")).lower() == "pending"]
+    completed = [
+        task
+        for task in tasks
+        if str(task.get("status", "")).lower() in {"completed", "done"}
+    ]
 
     print(f"\nIN PROGRESS: {len(in_progress)}")
-    for t in in_progress:
-        print(f"  [{t['id']}] {t['title']} (Assigned: {t['assigned_to']})")
-    
+    for task in in_progress:
+        assigned = _assignee(task) or "UNASSIGNED"
+        print(f"  [{task['id']}] {task['title']} (Assigned: {assigned})")
+
     print(f"\nAVAILABLE: {len(available)}")
-    for t in available[:5]:
-        print(f"  [{t['id']}] {t['title']}")
-    
+    for task in available[:5]:
+        print(f"  [{task['id']}] {task['title']}")
+
     print(f"\nCOMPLETED: {len(completed)}")
+
 
 def main():
     args = sys.argv[1:]
@@ -102,6 +130,7 @@ def main():
         mark_done(task_id)
     else:
         print(f"Unknown command/args: {args}")
+
 
 if __name__ == "__main__":
     main()

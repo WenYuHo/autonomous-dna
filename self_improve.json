@@ -1,6 +1,6 @@
-﻿{
+{
   "enabled": true,
-  "command": "python tools/self_improve.py --loop --max-cycles 3",
+  "command": "python tools/self_improve.py",
   "timeout_seconds": 3600,
   "retries": 1
 }

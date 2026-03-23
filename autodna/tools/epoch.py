@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import argparse
 import subprocess
 import datetime
@@ -13,7 +13,7 @@ from autodna.tools.io_utils import read_text_fallback
 RESEARCH_RETRIES = 2
 EVAL_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
-RESEARCH_TIMEOUT_SECONDS = 300
+RESEARCH_TIMEOUT_SECONDS = 60
 EVAL_TIMEOUT_SECONDS = 120
 TASKGEN_RETRIES = 1
 TASKGEN_TIMEOUT_SECONDS = 120
@@ -48,27 +48,64 @@ def _should_fix_memory_encoding(output: str) -> bool:
 def run_with_retries(command: list[str], attempts: int, delay_seconds: int, timeout_seconds: int, label: str) -> bool:
     for attempt in range(1, attempts + 1):
         try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
+            # Use Popen with process group for reliable timeout on Windows
+            kwargs = dict(
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            if result.stdout:
-                print(result.stdout, end="")
-            if result.stderr:
-                print(result.stderr, end="")
-            if result.returncode == 0:
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+            proc = subprocess.Popen(command, **kwargs)
+            try:
+                stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                print(f"[WARN] {label} timed out (attempt {attempt}/{attempts}).")
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                else:
+                    proc.kill()
+                proc.wait()
+                if attempt < attempts and delay_seconds > 0:
+                    time.sleep(delay_seconds)
+                continue
+
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            output = stdout + stderr
+            if stdout:
+                print(stdout, end="")
+            if stderr:
+                print(stderr, end="")
+            
+            # Check for fallback signal
+            if "SIGNAL: FALLBACK_REQUIRED" in output:
+                print(f"\n[INFO] {label} requested fallback. Trying alternative engine...")
+                # Determine which engine failed and try the other one
+                current_engine = "google"
+                if "--engine" in str(command):
+                    cmd_str = str(command)
+                    if "perplexity" in cmd_str:
+                        current_engine = "perplexity"
+                
+                fallback_engine = "perplexity" if current_engine == "google" else "google"
+                print(f"  -> {current_engine} failed. Retrying with {fallback_engine}...")
+                fallback_cmd = list(command)
+                if "--engine" in fallback_cmd:
+                    idx = fallback_cmd.index("--engine")
+                    fallback_cmd[idx+1] = fallback_engine
+                else:
+                    fallback_cmd.extend(["--engine", fallback_engine])
+                
+                return run_with_retries(fallback_cmd, attempts=1, delay_seconds=1, timeout_seconds=timeout_seconds, label=f"{label} ({fallback_engine} fallback)")
+
+
+            if proc.returncode == 0:
                 return True
-            output = (result.stdout or "") + (result.stderr or "")
             if _should_fix_memory_encoding(output):
                 fixed = _normalize_memory_file(Path("agent/MEMORY.md"))
                 if fixed:
                     continue
-        except subprocess.TimeoutExpired:
-            print(f"[WARN] {label} timed out (attempt {attempt}/{attempts}).")
         except subprocess.CalledProcessError:
             print(f"[WARN] {label} failed (attempt {attempt}/{attempts}).")
         else:
@@ -76,6 +113,7 @@ def run_with_retries(command: list[str], attempts: int, delay_seconds: int, time
         if attempt < attempts and delay_seconds > 0:
             time.sleep(delay_seconds)
     return False
+
 
 
 def safe_flush() -> None:
@@ -172,7 +210,10 @@ def main() -> None:
 
     step = 1
     print(f"\n[{step}/{total_steps}] EVOLUTIONARY RESEARCH")
-    print("Spawning agent to discover latest AI coding agent best practices...")
+    from autodna.tools.topic_generator import identify_next_topic
+    dynamic_topic, reason = identify_next_topic()
+    print(f"Reason: {reason}")
+    
     safe_flush()
     research_ok = run_with_retries(
         [
@@ -180,7 +221,7 @@ def main() -> None:
             "autodna/cli.py",
             "research",
             "--timestamped",
-            "latest state of the art AI coding agent system prompts and framework architecture 2026",
+            dynamic_topic,
         ],
         attempts=RESEARCH_RETRIES,
         delay_seconds=RETRY_DELAY_SECONDS,

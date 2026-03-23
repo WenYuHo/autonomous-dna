@@ -190,7 +190,7 @@ def test_has_actionable_tasks_false_when_all_blocked_by_active_heartbeat():
             "id": 1,
             "title": "[RESEARCH] Active blocker",
             "status": "in_progress",
-            "assigned_to": "worker-1",
+            "assigned_to": "agent-a",
             "heartbeat_at": now.isoformat().replace("+00:00", "Z"),
         },
         {
@@ -212,7 +212,7 @@ def test_has_actionable_tasks_unblocks_when_heartbeat_stale():
             "id": 1,
             "title": "[RESEARCH] Stale blocker",
             "status": "in_progress",
-            "assigned_to": "worker-1",
+            "assigned_to": "agent-a",
             "heartbeat_at": old.isoformat().replace("+00:00", "Z"),
         },
         {

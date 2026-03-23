@@ -1,7 +1,8 @@
-﻿import sys
+import sys
 import argparse
 import datetime
 import re
+import json
 from pathlib import Path
 
 from autodna.tools.io_utils import read_text_fallback
@@ -18,52 +19,72 @@ def parse_iso_timestamp(value: str):
 
 def defragment_tasks(dry_run=False, older_than_days=7, now=None):
     """
-    Reads agent/TASK_QUEUE.md and removes completed [x] tasks that were finished
-    more than older_than_days ago. If no Done timestamp is present, it falls back
-    to LAST_SYNC (if available).
+    Reads agent/TASK_QUEUE.json (or .md as fallback) and removes completed tasks
+    that were finished more than older_than_days ago.
     """
-    queue_path = Path("agent/TASK_QUEUE.md")
-    if not queue_path.exists():
-        print("âš ï¸ No TASK_QUEUE.md found.")
-        return 0
-
-    content = queue_path.read_text(encoding="utf-8")
-    lines = content.splitlines()
-    last_sync = None
-    for line in lines:
-        if line.startswith("# LAST_SYNC:"):
-            last_sync = parse_iso_timestamp(line.split(":", 1)[1].strip())
-            break
-
+    json_path = Path("agent/TASK_QUEUE.json")
+    md_path = Path("agent/TASK_QUEUE.md")
+    
     now_dt = now or datetime.datetime.now(datetime.UTC)
     cutoff = now_dt - datetime.timedelta(days=older_than_days)
-
-    new_lines = []
     removed_count = 0
 
-    for line in lines:
-        if not line.strip().startswith("- [x]"):
+    if json_path.exists():
+        try:
+            db = json.loads(json_path.read_text(encoding="utf-8"))
+            tasks = db.get("tasks", [])
+            new_tasks = []
+            for t in tasks:
+                if t.get("status") in {"completed", "done"}:
+                    updated_at = parse_iso_timestamp(t.get("updated_at", ""))
+                    if updated_at and updated_at < cutoff:
+                        removed_count += 1
+                        if dry_run:
+                            print(f"[Defrag] Would remove obsolete JSON task: {t.get('id')} - {t.get('title')}")
+                        continue
+                new_tasks.append(t)
+            
+            if removed_count > 0:
+                print(f"🧹 Defragmenter: Pruned {removed_count} stale completed tasks from JSON queue.")
+                if not dry_run:
+                    db["tasks"] = new_tasks
+                    json_path.write_text(json.dumps(db, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"⚠️ Error defragmenting JSON queue: {exc}")
+
+    if md_path.exists():
+        content = md_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        last_sync = None
+        for line in lines:
+            if line.startswith("# LAST_SYNC:"):
+                last_sync = parse_iso_timestamp(line.split(":", 1)[1].strip())
+                break
+        
+        new_lines = []
+        for line in lines:
+            if not line.strip().startswith("- [x]"):
+                new_lines.append(line)
+                continue
+
+            done_match = re.search(r"Done:\s*([0-9TZ:+-]+)", line)
+            done_dt = parse_iso_timestamp(done_match.group(1)) if done_match else None
+            effective_dt = done_dt or last_sync
+
+            if effective_dt and effective_dt < cutoff:
+                removed_count += 1
+                if dry_run:
+                    print(f"[Defrag] Would remove obsolete task: {line.strip()}")
+                continue
             new_lines.append(line)
-            continue
+        
+        if removed_count > 0:
+            print(f"🧹 Defragmenter: Pruned {removed_count} stale completed tasks from MD queue.")
+            if not dry_run:
+                md_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-        done_match = re.search(r"Done:\s*([0-9TZ:+-]+)", line)
-        done_dt = parse_iso_timestamp(done_match.group(1)) if done_match else None
-        effective_dt = done_dt or last_sync
-
-        if effective_dt and effective_dt < cutoff:
-            removed_count += 1
-            if dry_run:
-                print(f"[Defrag] Would remove obsolete task: {line.strip()}")
-            continue
-
-        new_lines.append(line)
-
-    if removed_count > 0:
-        print(f"ðŸ§¹ Defragmenter: Pruned {removed_count} stale completed tasks from context.")
-        if not dry_run:
-            queue_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    else:
-        print("âœ… Task context is optimal. No defragmentation needed.")
+    if removed_count == 0:
+        print("✅ Task context is optimal. No defragmentation needed.")
 
     return removed_count
 
