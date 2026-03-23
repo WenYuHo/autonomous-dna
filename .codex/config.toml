@@ -1,0 +1,3 @@
+[agent]
+welcome_message = "Autonomous DNA Codex agent initialized. Read AGENTS.md."
+disable_telemetry = true

@@ -1,0 +1,5 @@
+{
+  "customHooks": {
+    "PreToolUse": "python .claude/hooks/guard_scaffold.py"
+  }
+}

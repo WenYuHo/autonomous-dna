@@ -1,0 +1,56 @@
+﻿name: Release Export
+
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Export clean release tree
+        run: python tools/export_release.py --out dist/release --config release_manifest.json
+
+      - name: Update release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin release || true
+          git worktree prune
+          rm -rf release-worktree
+
+          if git show-ref --verify --quiet refs/remotes/origin/release; then
+            git worktree add release-worktree origin/release
+            cd release-worktree
+            git checkout -B release
+          else
+            git worktree add release-worktree --detach
+            cd release-worktree
+            git checkout --orphan release
+          fi
+
+          rsync -a --delete --exclude .git ../dist/release/ ./
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Release branch is up to date."
+            exit 0
+          fi
+
+          git commit -m "chore: update release export"
+          git push --force origin release

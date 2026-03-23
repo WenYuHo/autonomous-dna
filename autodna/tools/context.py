@@ -1,61 +1,81 @@
-import sys
+"""
+autodna/tools/context.py
+Implements the Context Manager Pattern.
+Gathers and dumps project-wide context for agent awareness.
+"""
+
 import argparse
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
-# Fix Windows cp1252 encoding for emoji output
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-DOCS = {
-    "memory": "agent/MEMORY.md",
-    "architecture": "agent/ARCHITECTURE.md",
-    "map": "agent/CODEBASE_MAP.md",
-    "decisions": "agent/DECISIONS.md",
-    "lessons": "agent/LESSONS.md",
-    "tech-stack": "conductor/tech-stack.md",
-    "workflow": "conductor/workflow.md",
-}
+def get_git_status() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "git not available or not a repo"
 
-def get_doc(topic):
-    if topic in DOCS:
-        p = Path(DOCS[topic])
-        if p.exists():
-            print(f"--- 📖 CONTENT OF {topic.upper()} ---")
-            print(p.read_text(encoding="utf-8"))
-        else:
-            print(f"❌ Document for '{topic}' not found at {DOCS[topic]}")
-    else:
-        print(f"❌ Unknown topic: {topic}")
-        print("Run 'python tools/symphony_context.py list' to see available topics.")
+def get_git_log(n: int = 3) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "log", f"-n {n}", "--oneline"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
 
-def list_docs():
-    print("📚 Available Documentation Topics:")
-    for key, path in DOCS.items():
-        size = "Unknown"
-        p = Path(path)
-        if p.exists():
-            size = f"{p.stat().st_size:,} bytes"
-        print(f"  - {key:15s} ({size}) -> {path}")
+def get_file_tree(root: Path, max_depth: int = 2) -> dict:
+    tree = {"files": [], "dirs": []}
+    try:
+        for item in root.iterdir():
+            if item.name.startswith(".") or item.name == "__pycache__":
+                continue
+            if item.is_file():
+                tree["files"].append(item.name)
+            elif item.is_dir():
+                tree["dirs"].append(item.name)
+                # Recurse if needed, simplified for now
+    except Exception as e:
+        tree["error"] = str(e)
+    return tree
+
+def dump_context():
+    context = {
+        "cwd": os.getcwd(),
+        "git_status": get_git_status(),
+        "recent_commits": get_git_log(),
+        "file_tree": get_file_tree(Path.cwd()),
+        "env_vars": {
+            "AUTODNA_PLATFORM": os.getenv("AUTODNA_PLATFORM"),
+            "AUTODNA_MODELS": os.getenv("AUTODNA_MODELS"),
+            "PATH": os.getenv("PATH", "")[:100] + "..." # Truncate for brevity
+        }
+    }
+    print(json.dumps(context, indent=2))
 
 def main():
-    parser = argparse.ArgumentParser(description="Symphony Context/Memory CLI Tool")
-    subparsers = parser.add_subparsers(dest="action", help="Action to perform")
-    
-    # List
-    subparsers.add_parser("list", help="List available documentation topics")
-    
-    # Get
-    parser_get = subparsers.add_parser("get", help="Fetch context for a specific topic")
-    parser_get.add_argument("topic", help="The topic to retrieve (e.g., 'map', 'memory')")
-    
+    parser = argparse.ArgumentParser(description="Autonomous DNA Context Manager")
+    parser.add_argument("action", choices=["dump"], help="Action to perform")
     args = parser.parse_args()
-    
-    if args.action == "list":
-        list_docs()
-    elif args.action == "get":
-        get_doc(args.topic)
-    else:
-        parser.print_help()
+
+    if args.action == "dump":
+        dump_context()
 
 if __name__ == "__main__":
     main()
