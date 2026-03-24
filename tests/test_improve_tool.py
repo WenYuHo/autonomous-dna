@@ -3,11 +3,12 @@ tests/test_improve_tool.py
 Unit tests for autodna/tools/improve.py helpers.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from autodna.tools.improve import ensure_clean_working_tree, run_command, compare_and_gate
+from autodna.tools.improve import ensure_clean_working_tree, run_command, compare_and_gate, run_user_dogfood_gate
 
 
 def test_ensure_clean_working_tree_raises_on_dirty():
@@ -56,3 +57,9 @@ def test_compare_and_gate_detects_failure(tmp_path):
         use_default_gates=False,
     )
     assert any("backlog_delta<=0" in failure for failure in failures)
+
+
+def test_run_user_dogfood_gate_skips_when_requested():
+    result = run_user_dogfood_gate(Path("."), allow_skip=True)
+    assert result["ok"] is True
+    assert result["skipped"] is True

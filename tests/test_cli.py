@@ -66,6 +66,13 @@ class TestDynamicToolDiscovery(unittest.TestCase):
         discovered = [name for _, name, _ in pkgutil.iter_modules(autodna.tools.__path__)]
         self.assertIn("tasks", discovered)
 
+    def test_user_dogfood_tool_discovered(self):
+        """The user_dogfood tool should be discoverable as a CLI subcommand."""
+        import pkgutil
+        import autodna.tools
+        discovered = [name for _, name, _ in pkgutil.iter_modules(autodna.tools.__path__)]
+        self.assertIn("user_dogfood", discovered)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from autodna.tools import dogfood
+from autodna.tools import dogfood, user_dogfood
 
 
 def ensure_clean_working_tree() -> None:
@@ -77,6 +77,15 @@ def compare_and_gate(
     return failures, summary
 
 
+def run_user_dogfood_gate(repo_root: Path, allow_skip: bool, artifact_parent: str | None = None) -> dict:
+    if allow_skip:
+        return {"ok": True, "skipped": True, "status": "skipped"}
+    return user_dogfood.run_user_dogfood_flow(
+        repo_root=repo_root,
+        artifact_parent=artifact_parent,
+    )
+
+
 def revert_changes() -> None:
     subprocess.run(["git", "restore", "."], check=False)
     subprocess.run(
@@ -101,6 +110,7 @@ def main() -> None:
     parser.add_argument("--test-cmd", default="python -m pytest tests/ -v", help="Test command to run")
     parser.add_argument("--test-timeout", type=int, default=1800, help="Timeout for tests (seconds)")
     parser.add_argument("--skip-tests", action="store_true", help="Skip tests")
+    parser.add_argument("--skip-user-dogfood", action="store_true", help="Skip the user dogfood verification flow")
     parser.add_argument("--baseline-label", default="baseline", help="Label for baseline report")
     parser.add_argument("--after-label", default="after", help="Label for after report")
     parser.add_argument("--notes", default="", help="Notes to include in reports")
@@ -160,6 +170,22 @@ def main() -> None:
             if not args.no_revert:
                 revert_changes()
             sys.exit(1)
+
+    dogfood_result = run_user_dogfood_gate(Path("."), allow_skip=args.skip_user_dogfood)
+    if not dogfood_result.get("ok"):
+        print("User dogfood verification failed:")
+        if dogfood_result.get("error"):
+            print(dogfood_result["error"])
+        for step in dogfood_result.get("steps", []):
+            status = "ok" if step.get("ok") else "FAILED"
+            print(f"  - {step.get('name')}: {status}")
+        if dogfood_result.get("artifacts"):
+            print("Artifacts:")
+            for label, path in dogfood_result["artifacts"].items():
+                print(f"  {label}: {path}")
+        if not args.no_revert:
+            revert_changes()
+        sys.exit(1)
 
     after_path = generate_report(
         label=args.after_label,
