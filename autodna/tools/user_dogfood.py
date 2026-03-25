@@ -7,6 +7,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autodna.core import repo_hooks
+
 
 def _now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -73,6 +75,29 @@ def _copy_log_if_present(temp_project: Path, artifact_dir: Path, agent_name: str
     return str(copied)
 
 
+def _copy_latest_hook_manifest(temp_project: Path, artifact_dir: Path, stage: str) -> tuple[str | None, dict | None]:
+    hook_dir = temp_project / "agent" / "reports" / "hook_runs"
+    if not hook_dir.exists():
+        return None, None
+    matches = sorted(hook_dir.glob(f"{stage}_*.json"))
+    if not matches:
+        return None, None
+    source_path = matches[-1]
+    copied_path = artifact_dir / source_path.name
+    copied_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    return str(copied_path), json.loads(copied_path.read_text(encoding="utf-8"))
+
+
+def _hook_step_record(result: dict) -> dict:
+    return {
+        "name": result.get("stage", "hook_stage"),
+        "ok": result.get("ok", False),
+        "status": result.get("status"),
+        "manifest_path": result.get("manifest_path"),
+        "hooks": result.get("hooks", []),
+    }
+
+
 def run_user_dogfood_flow(
     repo_root: Path | str | None = None,
     *,
@@ -106,6 +131,7 @@ def run_user_dogfood_flow(
     )
 
     steps: list[dict] = []
+    hook_runs: dict[str, dict] = {}
     smoke_log_path: str | None = None
     error: str | None = None
 
@@ -138,44 +164,21 @@ def run_user_dogfood_flow(
                 keep_temp,
             )
 
-        steps.append(
-            _step_record(
-                name="bridge",
-                cmd=[sys.executable, str(bridge_script)],
-                cwd=temp_project,
-                timeout=bridge_timeout,
-                artifact_dir=artifact_dir,
-            )
+        bootstrap_setup = repo_hooks.run_hook_stage(
+            repo_root=temp_project,
+            stage="bootstrap_setup",
+            artifact_parent=artifact_dir,
         )
-        if not steps[-1]["ok"]:
-            error = "bridge failed"
+        hook_runs["bootstrap_setup"] = bootstrap_setup
+        steps.append(_hook_step_record(bootstrap_setup))
+        if not bootstrap_setup.get("ok"):
+            error = "bootstrap_setup hooks failed"
             return _finalize_user_dogfood_result(
                 repo_root_path,
                 temp_project,
                 artifact_dir,
                 steps,
-                smoke_log_path,
-                error,
-                timestamp,
-                keep_temp,
-            )
-
-        steps.append(
-            _step_record(
-                name="session_start",
-                cmd=[sys.executable, str(session_script)],
-                cwd=temp_project,
-                timeout=session_timeout,
-                artifact_dir=artifact_dir,
-            )
-        )
-        if not steps[-1]["ok"]:
-            error = "session_start failed"
-            return _finalize_user_dogfood_result(
-                repo_root_path,
-                temp_project,
-                artifact_dir,
-                steps,
+                hook_runs,
                 smoke_log_path,
                 error,
                 timestamp,
@@ -227,6 +230,12 @@ def run_user_dogfood_flow(
         smoke_log_path = _copy_log_if_present(temp_project, artifact_dir, agent_name)
         if smoke_log_path:
             steps[-1]["smoke_log_path"] = smoke_log_path
+        smoke_repo_setup_manifest, smoke_repo_setup = _copy_latest_hook_manifest(temp_project, artifact_dir, "repo_setup")
+        if smoke_repo_setup_manifest:
+            steps[-1]["repo_setup_manifest_path"] = smoke_repo_setup_manifest
+        if smoke_repo_setup:
+            smoke_repo_setup["manifest_path"] = smoke_repo_setup_manifest
+            hook_runs["smoke_repo_setup"] = smoke_repo_setup
         if not steps[-1]["ok"]:
             error = "smoke start failed"
 
@@ -239,6 +248,7 @@ def run_user_dogfood_flow(
             temp_project,
             artifact_dir,
             steps,
+            hook_runs,
             smoke_log_path,
             error,
             timestamp,
@@ -254,6 +264,7 @@ def _finalize_user_dogfood_result(
     temp_project: Path,
     artifact_dir: Path,
     steps: list[dict],
+    hook_runs: dict[str, dict],
     smoke_log_path: str | None,
     error: str | None,
     timestamp: str,
@@ -270,15 +281,24 @@ def _finalize_user_dogfood_result(
         "smoke_log_path": smoke_log_path,
         "error": error,
         "steps": steps,
+        "hook_runs": hook_runs,
         "artifacts": {
             "manifest": str(artifact_dir / "manifest.json"),
         },
     }
     for step in steps:
-        result["artifacts"][f"{step['name']}_stdout"] = step["stdout_path"]
-        result["artifacts"][f"{step['name']}_stderr"] = step["stderr_path"]
+        if "stdout_path" in step:
+            result["artifacts"][f"{step['name']}_stdout"] = step["stdout_path"]
+        if "stderr_path" in step:
+            result["artifacts"][f"{step['name']}_stderr"] = step["stderr_path"]
         if "smoke_log_path" in step:
             result["artifacts"]["smoke_log"] = step["smoke_log_path"]
+        if "repo_setup_manifest_path" in step:
+            result["artifacts"]["smoke_repo_setup_manifest"] = step["repo_setup_manifest_path"]
+    for name, hook_result in hook_runs.items():
+        manifest_path = hook_result.get("manifest_path")
+        if manifest_path:
+            result["artifacts"][f"{name}_manifest"] = manifest_path
     if not keep_temp:
         shutil.rmtree(temp_project, ignore_errors=True)
     return result

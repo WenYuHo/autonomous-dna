@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -6,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autodna.core import repo_hooks
 from autodna.tools import dogfood, user_dogfood
 
 
@@ -102,12 +104,154 @@ def revert_changes() -> None:
     )
 
 
+def _now_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _verification_override_hooks(test_cmd: str | None, test_timeout: int, shell: bool) -> list[dict] | None:
+    if not test_cmd:
+        return None
+    return [
+        {
+            "name": "override_test_command",
+            "command": test_cmd,
+            "timeout": test_timeout,
+            "shell": shell,
+        }
+    ]
+
+
+def write_improve_artifact(result: dict, out_dir: Path | str = Path("agent") / "reports") -> Path:
+    out_path = Path(out_dir).resolve()
+    out_path.mkdir(parents=True, exist_ok=True)
+    artifact_path = out_path / f"improve_{_now_stamp()}.json"
+    artifact_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return artifact_path
+
+
+def execute_improve(args: argparse.Namespace) -> dict:
+    repo_root = Path(".").resolve()
+    result = {
+        "ok": False,
+        "status": "failed",
+        "timestamp": _now_stamp(),
+        "repo_root": str(repo_root),
+        "baseline_report": None,
+        "after_report": None,
+        "compare_summary": None,
+        "gate_failures": [],
+        "hook_runs": {},
+        "dogfood_result": None,
+        "error": None,
+        "artifact_path": None,
+        "reverted": False,
+    }
+
+    def finalize() -> dict:
+        artifact_path = write_improve_artifact(result)
+        result["artifact_path"] = str(artifact_path)
+        return result
+
+    if not args.allow_dirty:
+        ensure_clean_working_tree()
+
+    repo_setup = repo_hooks.run_hook_stage(repo_root=repo_root, stage="repo_setup")
+    result["hook_runs"]["repo_setup"] = repo_setup
+    if not repo_setup.get("ok"):
+        result["error"] = "repo setup hooks failed"
+        return finalize()
+
+    baseline_path = generate_report(
+        label=args.baseline_label,
+        notes=args.notes,
+        include_benchmark=args.include_benchmark,
+        target_dir=args.target_dir,
+        out_dir=args.out_dir,
+    )
+    result["baseline_report"] = str(baseline_path)
+
+    for cmd_str in args.apply_cmd:
+        cmd = parse_command(cmd_str, shell=args.apply_shell)
+        ok, out, err = run_command(cmd, timeout=args.apply_timeout, shell=args.apply_shell)
+        if not ok:
+            result["error"] = "apply command failed"
+            result["apply_stdout"] = out
+            result["apply_stderr"] = err
+            if not args.no_revert:
+                revert_changes()
+                result["reverted"] = True
+            return finalize()
+
+    if not args.skip_tests:
+        verification_result = repo_hooks.run_hook_stage(
+            repo_root=repo_root,
+            stage="repo_verification",
+            override_hooks=_verification_override_hooks(args.test_cmd, args.test_timeout, args.apply_shell),
+        )
+        result["hook_runs"]["repo_verification"] = verification_result
+        if not verification_result.get("ok"):
+            result["error"] = "repo verification hooks failed"
+            if not args.no_revert:
+                revert_changes()
+                result["reverted"] = True
+            return finalize()
+    else:
+        result["hook_runs"]["repo_verification"] = {
+            "ok": True,
+            "status": "skipped",
+            "stage": "repo_verification",
+            "hooks": [],
+        }
+
+    dogfood_result = run_user_dogfood_gate(
+        repo_root,
+        allow_skip=args.skip_user_dogfood,
+        artifact_parent=Path("agent") / "reports",
+    )
+    result["dogfood_result"] = dogfood_result
+    if not dogfood_result.get("ok"):
+        result["error"] = "user dogfood verification failed"
+        if not args.no_revert:
+            revert_changes()
+            result["reverted"] = True
+        return finalize()
+
+    after_path = generate_report(
+        label=args.after_label,
+        notes=args.notes,
+        include_benchmark=args.include_benchmark,
+        target_dir=args.target_dir,
+        out_dir=args.out_dir,
+    )
+    result["after_report"] = str(after_path)
+
+    failures, summary = compare_and_gate(
+        baseline_path=baseline_path,
+        after_path=after_path,
+        gates=args.gate,
+        use_default_gates=not args.no_default_gates,
+    )
+    result["gate_failures"] = failures
+    result["compare_summary"] = summary
+
+    if failures:
+        result["error"] = "gate failures detected"
+        if not args.no_revert:
+            revert_changes()
+            result["reverted"] = True
+        return finalize()
+
+    result["ok"] = True
+    result["status"] = "passed"
+    return finalize()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous DNA Improve Command (gated apply/revert)")
     parser.add_argument("--apply-cmd", action="append", default=[], help="Command to apply improvements (repeatable)")
     parser.add_argument("--apply-shell", action="store_true", help="Run apply commands through the shell")
     parser.add_argument("--apply-timeout", type=int, default=900, help="Timeout per apply command (seconds)")
-    parser.add_argument("--test-cmd", default="python -m pytest tests/ -v", help="Test command to run")
+    parser.add_argument("--test-cmd", help="Override the repo verification command")
     parser.add_argument("--test-timeout", type=int, default=1800, help="Timeout for tests (seconds)")
     parser.add_argument("--skip-tests", action="store_true", help="Skip tests")
     parser.add_argument("--skip-user-dogfood", action="store_true", help="Skip the user dogfood verification flow")
@@ -129,88 +273,40 @@ def main() -> None:
         ensure_clean_working_tree()
 
     if args.dry_run:
-        print("[DRY RUN] Would generate baseline/after dogfood reports, apply commands, run tests, and gate.")
+        print(
+            "[DRY RUN] Would run repo setup hooks, generate baseline/after dogfood reports, "
+            "apply commands, run repo verification hooks, run user dogfood, and gate."
+        )
         sys.exit(0)
 
     if not args.apply_cmd:
         print("No apply commands provided. Use --apply-cmd to specify improvement actions.")
         sys.exit(1)
 
-    baseline_path = generate_report(
-        label=args.baseline_label,
-        notes=args.notes,
-        include_benchmark=args.include_benchmark,
-        target_dir=args.target_dir,
-        out_dir=args.out_dir,
-    )
-    print(f"Baseline report: {baseline_path}")
+    result = execute_improve(args)
+    if result.get("baseline_report"):
+        print(f"Baseline report: {result['baseline_report']}")
+    if result.get("after_report"):
+        print(f"After report: {result['after_report']}")
+    for stage_name in ("repo_setup", "repo_verification"):
+        stage_result = result["hook_runs"].get(stage_name)
+        if stage_result and stage_result.get("manifest_path"):
+            print(f"{stage_name} hook manifest: {stage_result['manifest_path']}")
+    if result.get("compare_summary"):
+        print(result["compare_summary"])
+    print(f"Improve artifact: {result['artifact_path']}")
 
-    for cmd_str in args.apply_cmd:
-        cmd = parse_command(cmd_str, shell=args.apply_shell)
-        ok, out, err = run_command(cmd, timeout=args.apply_timeout, shell=args.apply_shell)
-        if not ok:
-            print("Apply command failed:")
-            if out:
-                print(out[-2000:])
-            if err:
-                print(err[-2000:])
-            if not args.no_revert:
-                revert_changes()
-            sys.exit(1)
+    if result["status"] == "passed":
+        print("Improve run accepted. Gates passed.")
+        sys.exit(0)
 
-    if not args.skip_tests:
-        test_cmd = parse_command(args.test_cmd, shell=args.apply_shell)
-        ok, out, err = run_command(test_cmd, timeout=args.test_timeout, shell=args.apply_shell)
-        if not ok:
-            print("Tests failed:")
-            if out:
-                print(out[-2000:])
-            if err:
-                print(err[-2000:])
-            if not args.no_revert:
-                revert_changes()
-            sys.exit(1)
-
-    dogfood_result = run_user_dogfood_gate(Path("."), allow_skip=args.skip_user_dogfood)
-    if not dogfood_result.get("ok"):
-        print("User dogfood verification failed:")
-        if dogfood_result.get("error"):
-            print(dogfood_result["error"])
-        for step in dogfood_result.get("steps", []):
-            status = "ok" if step.get("ok") else "FAILED"
-            print(f"  - {step.get('name')}: {status}")
-        if dogfood_result.get("artifacts"):
-            print("Artifacts:")
-            for label, path in dogfood_result["artifacts"].items():
-                print(f"  {label}: {path}")
-        if not args.no_revert:
-            revert_changes()
-        sys.exit(1)
-
-    after_path = generate_report(
-        label=args.after_label,
-        notes=args.notes,
-        include_benchmark=args.include_benchmark,
-        target_dir=args.target_dir,
-        out_dir=args.out_dir,
-    )
-    print(f"After report: {after_path}")
-
-    failures, summary = compare_and_gate(
-        baseline_path=baseline_path,
-        after_path=after_path,
-        gates=args.gate,
-        use_default_gates=not args.no_default_gates,
-    )
-    print(summary)
-
-    if failures:
-        print("Gate failures detected.")
-        if not args.no_revert:
-            revert_changes()
-        sys.exit(2)
-
-    print("Improve run accepted. Gates passed.")
+    print(result.get("error") or "Improve run failed.")
+    if result.get("dogfood_result", {}).get("artifacts"):
+        print("Dogfood artifacts:")
+        for label, path in result["dogfood_result"]["artifacts"].items():
+            print(f"  {label}: {path}")
+    exit_code = 2 if result.get("error") == "gate failures detected" else 1
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

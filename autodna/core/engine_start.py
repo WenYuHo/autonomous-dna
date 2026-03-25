@@ -4,6 +4,8 @@ import pathlib
 import subprocess
 import sys
 
+from autodna.core import repo_hooks
+
 GEMINI_PLATFORMS = {"GEMINI", "GEMINI_CLI", "GEMINI-CLI", "ANTIGRAVITY"}
 GPU_LOCK_PATH = pathlib.Path("agent/GPU.lock")
 
@@ -109,6 +111,13 @@ def main(argv: list[str] | None = None):
     if GPU_LOCK_PATH.exists():
         GPU_LOCK_PATH.unlink()
         print("Cleared stale GPU lock.")
+
+    hook_result = repo_hooks.run_hook_stage(repo_root=pathlib.Path.cwd(), stage="repo_setup")
+    if hook_result.get("hooks"):
+        print(f"Repo setup hook manifest: {hook_result['manifest_path']}")
+    if not hook_result.get("ok"):
+        print("Repo setup hooks failed.")
+        sys.exit(1)
 
     mission = args.mission or build_agent_mission(args.agent_name, args.task_id)
     result = launch_agent(args.agent_name, mission, color=args.color, headless=args.headless)

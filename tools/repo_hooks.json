@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "stages": {
+    "bootstrap_setup": [
+      {
+        "name": "bridge",
+        "command": ["python", "bridge.py"],
+        "timeout": 120
+      },
+      {
+        "name": "session_start",
+        "command": ["python", "tools/session_start.py"],
+        "timeout": 120
+      }
+    ],
+    "repo_setup": [
+      {
+        "name": "guard_scaffold",
+        "command": ["python", "tools/guard_scaffold.py", "--check"],
+        "timeout": 60
+      }
+    ],
+    "repo_verification": [
+      {
+        "name": "pytest",
+        "command": ["python", "-m", "pytest", "tests", "-v"],
+        "timeout": 1800
+      }
+    ]
+  }
+}

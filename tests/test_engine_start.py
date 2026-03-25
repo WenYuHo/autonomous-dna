@@ -3,6 +3,8 @@ import pathlib
 import sys
 from unittest.mock import mock_open, patch
 
+import pytest
+
 from autodna.core import engine_start
 
 
@@ -68,28 +70,43 @@ def test_launch_agent_headless(mock_popen):
 
 
 @patch("autodna.core.engine_start.launch_agent")
+@patch("autodna.core.engine_start.repo_hooks.run_hook_stage")
 @patch("os.path.exists")
 @patch("pathlib.Path.exists")
 @patch("pathlib.Path.unlink")
-def test_main_interactive_flow(mock_unlink, mock_gpu_exists, mock_git_exists, mock_launch):
+def test_main_interactive_flow(mock_unlink, mock_gpu_exists, mock_git_exists, mock_run_hooks, mock_launch):
     mock_git_exists.return_value = True
     mock_gpu_exists.return_value = True
+    mock_run_hooks.return_value = {
+        "ok": True,
+        "status": "passed",
+        "manifest_path": "agent/reports/repo_setup.json",
+        "hooks": [{"name": "guard_scaffold", "ok": True}],
+    }
 
     with patch.object(sys, "argv", ["engine_start.py"]):
         engine_start.main()
 
     mock_unlink.assert_called_once()
+    mock_run_hooks.assert_called_once()
     mock_launch.assert_called_once()
     assert mock_launch.call_args[0][0] == "autodna"
     assert mock_launch.call_args[1]["headless"] is False
 
 
 @patch("autodna.core.engine_start.launch_agent")
+@patch("autodna.core.engine_start.repo_hooks.run_hook_stage")
 @patch("os.path.exists")
 @patch("pathlib.Path.exists")
-def test_main_headless_flow(mock_gpu_exists, mock_git_exists, mock_launch):
+def test_main_headless_flow(mock_gpu_exists, mock_git_exists, mock_run_hooks, mock_launch):
     mock_git_exists.return_value = True
     mock_gpu_exists.return_value = False
+    mock_run_hooks.return_value = {
+        "ok": True,
+        "status": "passed",
+        "manifest_path": "agent/reports/repo_setup.json",
+        "hooks": [{"name": "guard_scaffold", "ok": True}],
+    }
     mock_launch.return_value = pathlib.Path("/tmp/agent/autodna.log")
 
     with patch.object(sys, "argv", ["engine_start.py", "--headless", "--agent-name", "codex", "--task-id", "17"]):
@@ -98,3 +115,24 @@ def test_main_headless_flow(mock_gpu_exists, mock_git_exists, mock_launch):
     assert mock_launch.call_args[0][0] == "codex"
     assert "task 17" in mock_launch.call_args[0][1]
     assert mock_launch.call_args[1]["headless"] is True
+
+
+@patch("autodna.core.engine_start.launch_agent")
+@patch("autodna.core.engine_start.repo_hooks.run_hook_stage")
+@patch("os.path.exists")
+@patch("pathlib.Path.exists")
+def test_main_exits_when_repo_setup_hooks_fail(mock_gpu_exists, mock_git_exists, mock_run_hooks, mock_launch):
+    mock_git_exists.return_value = True
+    mock_gpu_exists.return_value = False
+    mock_run_hooks.return_value = {
+        "ok": False,
+        "status": "failed",
+        "manifest_path": "agent/reports/repo_setup.json",
+        "hooks": [{"name": "guard_scaffold", "ok": False}],
+    }
+
+    with patch.object(sys, "argv", ["engine_start.py"]), pytest.raises(SystemExit) as excinfo:
+        engine_start.main()
+
+    assert excinfo.value.code == 1
+    mock_launch.assert_not_called()
