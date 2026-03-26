@@ -76,11 +76,11 @@ def reset_lab():
     run_cmd(f'git worktree add -b lab-agent "{lab_dir}"', cwd=repo_root)
     
     # 4. Set remote
-    print("Setting remote origin for lab...")
-    # Change remote URL for origin inside lab
-    run_cmd(f'git remote remove origin', cwd=lab_dir, ignore_errors=True)
-    run_cmd(f'git remote add origin "{origin_dir}"', cwd=lab_dir)
-    run_cmd(f'git push --set-upstream origin lab-agent', cwd=lab_dir)
+    print("Setting remote lab-origin for lab...")
+    # Add a custom remote URL for the local bare repo so it doesn't overwrite the main 'origin'
+    run_cmd(f'git remote remove lab-origin', cwd=lab_dir, ignore_errors=True)
+    run_cmd(f'git remote add lab-origin "{origin_dir}"', cwd=lab_dir)
+    run_cmd(f'git push --set-upstream lab-origin lab-agent', cwd=lab_dir)
     
     print("Lab environment reset successfully.\n")
 
