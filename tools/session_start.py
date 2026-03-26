@@ -9,8 +9,9 @@ Output is designed to be read by the agent — structured for LLM consumption.
 from pathlib import Path
 from datetime import datetime, timezone
 
-# Fix Windows cp1252 charmap encoding for console emojis
-# This block is moved inside main() as per the instruction's implied structure.
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 import json
 
@@ -64,7 +65,7 @@ def main() -> None:
     # --- Memory snapshot ---
     mem_path = root / "agent" / "MEMORY.md"
     if mem_path.exists():
-        lines = mem_path.read_text().splitlines()
+        lines = mem_path.read_text(encoding='utf-8').splitlines()
         total = len([line for line in lines if line.strip() and not line.startswith("#")])
         print(f"\n--- MEMORY ({total} facts, limit 150) ---")
         # Show most recent 20 facts
