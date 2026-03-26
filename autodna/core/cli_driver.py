@@ -93,6 +93,21 @@ class CodexDriver(BaseDriver):
     def is_quota_exhausted(self, line: str) -> bool:
         return "rate limit" in line.lower() or "quota" in line.lower()
 
+class AntigravityDriver(BaseDriver):
+    def get_command(self, model: str, mission: str) -> List[str]:
+        # Uses the legacy /ralph:loop syntax specific to the Antigravity CLI
+        return [
+            "antigravity.cmd",
+            "--prompt",
+            f'/ralph:loop "{mission}"',
+            "--yolo",
+            "--model",
+            model
+        ]
+
+    def is_quota_exhausted(self, line: str) -> bool:
+        return "exhausted your capacity on this model" in line or "QUOTA_EXHAUSTED" in line
+
 def get_driver(platform_name: str) -> BaseDriver:
     plat = platform_name.strip().upper()
     if plat in {"CLAUDE_CODE", "CLAUDE-CODE", "CLAUDE"}:
@@ -101,7 +116,9 @@ def get_driver(platform_name: str) -> BaseDriver:
         return AiderDriver()
     elif plat in {"CODEX", "CODEX_APP", "CODEX_DESKTOP", "CODEX_CLI", "OPENAI"}:
         return CodexDriver()
-    elif plat in {"GEMINI", "GEMINI_CLI", "GEMINI-CLI", "ANTIGRAVITY"}:
+    elif plat in {"GEMINI", "GEMINI_CLI", "GEMINI-CLI"}:
         return GeminiDriver()
+    elif plat == "ANTIGRAVITY":
+        return AntigravityDriver()
     # Default to Gemini if unknown or specifically requested
     return GeminiDriver()
