@@ -1,5 +1,6 @@
 import os
 import pathlib
+import subprocess
 import sys
 from unittest.mock import mock_open, patch
 
@@ -26,6 +27,8 @@ def test_build_agent_mission_for_specific_task():
     assert "task 12" in mission
     assert "tasks claim 12 autodna" in mission
     assert "tasks complete 12" in mission
+    assert "inspect leftover modified/untracked files" in mission
+    assert "brainstorm one small adjacent improvement" in mission
 
 
 def test_build_agent_mission_without_task():
@@ -33,6 +36,27 @@ def test_build_agent_mission_without_task():
     assert "Resume any task already assigned to you" in mission
     assert "tasks claim <id> autodna" in mission
     assert "Stay in the main workspace" in mission
+    assert "tasks add" in mission
+
+
+def test_build_agent_mission_includes_worktree_summary_when_available():
+    with patch.object(engine_start, "_worktree_summary_for_mission", return_value="Current worktree summary: clean."):
+        mission = engine_start.build_agent_mission("autodna", 7)
+    assert "Current worktree summary: clean." in mission
+
+
+def test_worktree_summary_parses_porcelain_output():
+    status = subprocess.CompletedProcess(
+        ["git", "status", "--porcelain"],
+        0,
+        " M tools/self_improve.py\n?? agent/run_outcomes/\nR  old.py -> new.py\n",
+        "",
+    )
+    with patch("subprocess.run", return_value=status):
+        summary = engine_start._worktree_summary_for_mission(max_items=2)
+    assert "3 file(s)" in summary
+    assert "agent/run_outcomes/" in summary or "tools/self_improve.py" in summary or "new.py" in summary
+    assert "+1 more" in summary
 
 
 @patch("subprocess.run")

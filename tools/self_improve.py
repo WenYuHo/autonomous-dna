@@ -4,6 +4,7 @@ Single-agent orchestrator for the Autonomous-DNA self-improvement loop.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -53,6 +54,8 @@ DEFAULT_RESEARCH_TOPICS = [
     "ai coding agent eval harnesses, regression gates, and benchmark suites 2025 2026",
     "tool-use reliability, prompt injection defenses, and guardrails for coding agents",
 ]
+LEFTOVER_TASK_TITLE = "[FOLLOWUP] Triage leftover workspace files"
+LEFTOVER_SIGNATURE_KEY = "leftover_signature="
 
 
 def parse_gate_env(value: str) -> list[str]:
@@ -187,6 +190,87 @@ def _run_cli_step(command: list[str], label: str, timeout_seconds: int) -> bool:
             logger.warning(result.stderr.strip()[-1000:])
         return False
     return True
+
+
+def _extract_porcelain_path(line: str) -> str:
+    text = (line or "").rstrip()
+    if not text:
+        return ""
+    payload = text[3:] if len(text) > 3 else text
+    payload = payload.strip()
+    if " -> " in payload:
+        payload = payload.split(" -> ", 1)[1].strip()
+    return payload
+
+
+def _collect_leftover_files() -> list[str]:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+
+    files = []
+    for raw_line in (result.stdout or "").splitlines():
+        path = _extract_porcelain_path(raw_line)
+        if path:
+            files.append(path)
+    return sorted(set(files))
+
+
+def _leftover_signature(files: list[str]) -> str:
+    normalized = "\n".join(sorted(set(files)))
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _find_open_leftover_followup(signature: str, tasks: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    marker = f"{LEFTOVER_SIGNATURE_KEY}{signature}"
+    for task in tasks:
+        status = str(task.get("status", "")).lower()
+        if status in {"done", "completed", "info"}:
+            continue
+        title = str(task.get("title", "")).strip()
+        description = str(task.get("description", "")).strip()
+        if title == LEFTOVER_TASK_TITLE and marker in description:
+            return task
+    return None
+
+
+def _create_leftover_followup_task(files: list[str], signature: str) -> None:
+    preview = ", ".join(files[:5])
+    if len(files) > 5:
+        preview = f"{preview}, +{len(files) - 5} more"
+    description = (
+        "No actionable queue task was found, but leftover workspace files remain. "
+        "Resolve files that match the active request now, and queue unrelated work as concrete tasks. "
+        f"{LEFTOVER_SIGNATURE_KEY}{signature}; files={preview}"
+    )
+    ref = files[0] if files else "NONE"
+    task_api.add_task(LEFTOVER_TASK_TITLE, description, ref=ref)
+
+
+def _ensure_leftover_followup_task() -> dict[str, Any]:
+    files = _collect_leftover_files()
+    if not files:
+        return {"created": False, "task_id": None, "file_count": 0}
+
+    signature = _leftover_signature(files)
+    existing = _find_open_leftover_followup(signature, _load_tasks())
+    if existing:
+        return {"created": False, "task_id": existing.get("id"), "file_count": len(files)}
+
+    _create_leftover_followup_task(files, signature)
+    created = _find_open_leftover_followup(signature, _load_tasks())
+    return {"created": True, "task_id": created.get("id") if created else None, "file_count": len(files)}
 
 
 def _select_actionable_task(agent_name: str) -> Optional[dict[str, Any]]:
@@ -471,8 +555,24 @@ def main():
         task = _select_actionable_task(args.agent_name)
 
     if not task:
-        logger.info("No actionable self-improvement task found.")
-        return
+        leftover_followup = _ensure_leftover_followup_task()
+        if leftover_followup.get("created"):
+            logger.info(
+                "Created leftover follow-up task %s for %s workspace file(s).",
+                leftover_followup.get("task_id"),
+                leftover_followup.get("file_count"),
+            )
+            task = _select_actionable_task(args.agent_name)
+        elif leftover_followup.get("task_id"):
+            logger.info(
+                "Leftover follow-up task %s already exists for %s workspace file(s).",
+                leftover_followup.get("task_id"),
+                leftover_followup.get("file_count"),
+            )
+            task = _select_actionable_task(args.agent_name)
+        if not task:
+            logger.info("No actionable self-improvement task found.")
+            return
 
     if args.dry_run:
         logger.info("[DRY RUN] Would run task %s - %s as %s", task["id"], task["title"], args.agent_name)

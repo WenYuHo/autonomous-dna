@@ -200,7 +200,7 @@ def main():
                     time.sleep(2) # Brief cooldown before rapid-reboot
                 else:
                     print(f"[{agent_name}] All fallback models exhausted. Cannot continue.")
-                    sys.exit(1)
+                    break
             else:
                 # If the process exited for a reason *other* than quota (e.g. fatal code bug, user abort)
                 exit_code = process.returncode
