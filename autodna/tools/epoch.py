@@ -13,7 +13,7 @@ from autodna.tools.io_utils import read_text_fallback
 RESEARCH_RETRIES = 2
 EVAL_RETRIES = 2
 RETRY_DELAY_SECONDS = 2
-RESEARCH_TIMEOUT_SECONDS = 60
+RESEARCH_TIMEOUT_SECONDS = 120
 EVAL_TIMEOUT_SECONDS = 120
 TASKGEN_RETRIES = 1
 TASKGEN_TIMEOUT_SECONDS = 120
@@ -221,6 +221,7 @@ def main() -> None:
             "autodna/cli.py",
             "research",
             "--timestamped",
+            f"--timeout-ms={RESEARCH_TIMEOUT_SECONDS * 1000}",
             dynamic_topic,
         ],
         attempts=RESEARCH_RETRIES,

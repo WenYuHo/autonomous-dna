@@ -54,26 +54,32 @@ def identify_next_topic():
     
     if frontier_topics:
         raw_topic = frontier_topics[0]
-        # Convert "Context Compression" -> "python library for context compression in ai agents"
-        selected = f"best python libraries and patterns for {raw_topic.lower()} in autonomous agents"
-        reason = "Strategic Frontier Goal (Naturalized)"
+        current_year = datetime.now().year
+        # BROADER KEYWORDS: e.g. "context compression python agents 2026 github" 
+        # instead of "best python libraries and patterns for..."
+        selected = f"{raw_topic.lower()} python agents {current_year} github"
+        reason = "Strategic Frontier Goal (Streamlined)"
     elif error_patterns:
         from collections import Counter
         counts = Counter(error_patterns)
         top_error = counts.most_common(1)[0][0]
-        # Convert "Subprocess" -> "how to fix subprocess error python best practices"
-        selected = f"how to fix {top_error.lower()} error python best practices"
+        current_year = datetime.now().year
+        # "fix subprocess error python 2026"
+        selected = f"fix {top_error.lower()} error python {current_year} best practices"
         reason = f"Urgent Error Fix: {top_error}"
     else:
         # Fallback to a rotating "Discovery Persona"
+        current_year = datetime.now().year
         personas = [
-            "latest autonomous ai agent architecture patterns github",
-            "state of the art python tools for ai agents 2026",
-            "efficient vector memory libraries for python agents"
+            f"latest autonomous ai agent architecture patterns github {current_year}",
+            f"harness engineering ai agents {current_year}",
+            f"agentic workflow patterns comparison {current_year} blog",
+            f"memory management patterns for large language model agents {current_year}",
+            f"state of the art python tools for ai agents {current_year}"
         ]
         import random
         selected = random.choice(personas)
-        reason = "Exploratory Discovery (Random Persona)"
+        reason = "Exploratory Discovery (Modern Persona)"
         
     print(f"\nSELECTED TOPIC: {selected}")
     print(f"REASON: {reason}")
