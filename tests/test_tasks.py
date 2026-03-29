@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autodna.tools import tasks
@@ -43,6 +44,7 @@ def test_claim_task_assigns_when_pending(tmp_path, monkeypatch, capsys):
 
 def test_claim_task_rejects_other_agent(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "agent" / "TASK_QUEUE.json"
+    now = datetime.now(timezone.utc)
     _write_db(
         db_path,
         [
@@ -53,6 +55,7 @@ def test_claim_task_rejects_other_agent(tmp_path, monkeypatch, capsys):
                 "ref": "NONE",
                 "status": "in_progress",
                 "assigned_to": "agent-a",
+                "heartbeat_at": now.isoformat().replace("+00:00", "Z"),
                 "updated_at": "2026-01-01T00:00:00Z",
             }
         ],
@@ -194,3 +197,66 @@ def test_list_tasks_handles_missing_assigned_to(tmp_path, monkeypatch, capsys):
     tasks.list_tasks()
     out = capsys.readouterr().out
     assert "Unassigned task - IN_PROGRESS" in out
+
+
+def test_claim_task_reclaims_stale_assignment(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "agent" / "TASK_QUEUE.json"
+    stale = datetime.now(timezone.utc) - timedelta(seconds=tasks.HEARTBEAT_TTL_SECONDS + 5)
+    _write_db(
+        db_path,
+        [
+            {
+                "id": 8,
+                "title": "Stale task",
+                "description": "desc",
+                "ref": "NONE",
+                "status": "in_progress",
+                "assigned_to": "agent-a",
+                "heartbeat_at": stale.isoformat().replace("+00:00", "Z"),
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(tasks, "DB_FILE", db_path)
+
+    tasks.claim_task(8, "agent-b")
+    out = capsys.readouterr().out
+    assert "reclaimed stale Task #8 from agent-a" in out
+
+    db = _load_db(db_path)
+    assert db["tasks"][0]["assigned_to"] == "agent-b"
+    assert db["tasks"][0]["heartbeat_at"].endswith("Z")
+
+
+def test_get_next_task_prefers_stale_in_progress(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent" / "TASK_QUEUE.json"
+    stale = datetime.now(timezone.utc) - timedelta(seconds=tasks.HEARTBEAT_TTL_SECONDS + 5)
+    _write_db(
+        db_path,
+        [
+            {
+                "id": 9,
+                "title": "[IMPROVE] Stale active task",
+                "description": "resume me",
+                "ref": "NONE",
+                "status": "in_progress",
+                "assigned_to": "agent-a",
+                "heartbeat_at": stale.isoformat().replace("+00:00", "Z"),
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "id": 10,
+                "title": "[IMPROVE] Pending task",
+                "description": "new work",
+                "ref": "NONE",
+                "status": "pending",
+                "assigned_to": None,
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+        ],
+    )
+    monkeypatch.setattr(tasks, "DB_FILE", db_path)
+
+    task = tasks.get_next_task()
+
+    assert task["id"] == 9
