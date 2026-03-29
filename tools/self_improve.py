@@ -23,6 +23,8 @@ if str(REPO_ROOT) not in sys.path:
 from autodna.core import engine_start
 from autodna.tools import dogfood
 from autodna.tools import tasks as task_api
+from autodna.tools import outcomes as outcome_api
+from autodna.tools import recurring_issues as issue_detector
 from tools import git_ops
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -299,7 +301,7 @@ def _bootstrap_queue() -> None:
 
 
 def _git_preflight(fetch: bool = True) -> tuple[bool, Optional[str]]:
-    state = git_ops.inspect_git_state(fetch=fetch)
+    state = git_ops.inspect_git_state(fetch=fetch, allow_dirty=git_ops.is_lab_mode())
     if state.get("ok"):
         return True, None
     issues = state.get("issues", [])
@@ -482,9 +484,24 @@ def main():
 
     task = next((item for item in _load_tasks() if item.get("id") == task["id"]), task)
     run_status, run_note = run_agent(task, timeout_seconds=args.timeout, agent_name=args.agent_name)
+    
+    # Record outcome for analysis
+    outcomes_dir = Path("agent/run_outcomes")
+    outcome_api.record_outcome(task["id"], run_status, run_note or "", args.agent_name, outcomes_dir)
+
     if run_status == "done":
         logger.info("Self-improve task %s completed.", task["id"])
         return
+
+    # For errors or blocks, scan for recurring issues
+    try:
+        issues_db = Path("agent/issues.db")
+        recurring = issue_detector.detect_recurring_issues(outcomes_dir, issues_db)
+        if recurring:
+            logger.warning("Detected %d recurring issue(s). Auto-creating fix tasks.", len(recurring))
+            issue_detector.auto_create_fix_tasks(recurring, TASK_QUEUE_FILE)
+    except Exception as exc:
+        logger.warning("Recurring issue detection failed: %s", exc)
 
     current_task = next((item for item in _load_tasks() if item.get("id") == task["id"]), {})
     current_status = str(current_task.get("status", "")).lower()

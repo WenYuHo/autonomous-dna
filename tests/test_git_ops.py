@@ -126,3 +126,27 @@ def test_inspect_git_state_reports_missing_upstream(monkeypatch):
 
     assert state["ok"] is False
     assert "Current branch has no upstream tracking branch." in state["issues"]
+
+
+def test_inspect_git_state_allows_dirty_when_explicit(monkeypatch):
+    status = subprocess.CompletedProcess(
+        ["git", "status"],
+        0,
+        "\n".join(
+            [
+                "# branch.oid abcdef",
+                "# branch.head dev",
+                "1 .M N... 100644 100644 100644 file.py file.py",
+            ]
+        ),
+        "",
+    )
+
+    monkeypatch.setattr(git_ops.os.path, "exists", lambda path: path == ".git")
+    monkeypatch.setattr(git_ops, "run", lambda args, check=False: status)
+
+    state = git_ops.inspect_git_state(fetch=False, allow_dirty=True)
+
+    assert state["ok"] is True
+    assert state["dirty"] is True
+    assert state["issues"] == []

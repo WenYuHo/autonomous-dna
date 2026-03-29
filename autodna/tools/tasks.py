@@ -1,7 +1,8 @@
 import argparse
 import json
+import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Fix Windows cp1252 encoding for CLI output.
@@ -11,6 +12,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 DB_FILE = Path("agent/TASK_QUEUE.json")
+HEARTBEAT_TTL_SECONDS = int(os.getenv("AUTODNA_TASK_HEARTBEAT_TTL", "900"))
 
 
 def load_db():
@@ -32,6 +34,25 @@ def _assignee(task):
     if isinstance(assigned_to, str):
         assigned_to = assigned_to.strip()
     return assigned_to or None
+
+
+def _parse_iso(value):
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def _heartbeat_fresh(task):
+    heartbeat = _parse_iso(task.get("heartbeat_at"))
+    if not heartbeat:
+        return False
+    return datetime.now(timezone.utc) - heartbeat <= timedelta(seconds=HEARTBEAT_TTL_SECONDS)
 
 
 def add_task(title, description, ref="NONE"):
@@ -65,7 +86,10 @@ def list_tasks(status_filter=None):
     for task in tasks:
         assigned_to = _assignee(task)
         assignee = f" (Assigned: {assigned_to})" if assigned_to else ""
-        print(f"[{task['id']}] {task['title']} - {str(task.get('status', '')).upper()}{assignee}")
+        stale = ""
+        if str(task.get("status", "")).lower() == "in_progress" and not _heartbeat_fresh(task):
+            stale = " [STALE]"
+        print(f"[{task['id']}] {task['title']} - {str(task.get('status', '')).upper()}{stale}{assignee}")
         print(f"    > {task.get('description', '')}")
 
 
@@ -81,16 +105,24 @@ def claim_task(task_id, agent_name):
             return
 
         assigned_to = _assignee(task)
-        if assigned_to and assigned_to != agent_name:
-            print(f"Task #{task_id} is already claimed by {assigned_to}.")
-            return
-
         if status == "in_progress" and not assigned_to:
             task["assigned_to"] = agent_name
             task["updated_at"] = get_now()
             task["heartbeat_at"] = get_now()
             save_db(db)
             print(f"{agent_name} resumed orphaned Task #{task_id}.")
+            return
+
+        if status == "in_progress" and assigned_to and assigned_to != agent_name and not _heartbeat_fresh(task):
+            task["assigned_to"] = agent_name
+            task["updated_at"] = get_now()
+            task["heartbeat_at"] = get_now()
+            save_db(db)
+            print(f"{agent_name} reclaimed stale Task #{task_id} from {assigned_to}.")
+            return
+
+        if assigned_to and assigned_to != agent_name:
+            print(f"Task #{task_id} is already claimed by {assigned_to}.")
             return
 
         if status == "in_progress":
@@ -198,7 +230,22 @@ def get_next_task():
         blocker = by_id.get(blocked_by)
         if not blocker:
             return False
-        return str(blocker.get("status", "")).lower() not in {"completed", "done", "info"}
+        status = str(blocker.get("status", "")).lower()
+        if status in {"completed", "done", "info"}:
+            return False
+        if status == "in_progress":
+            return _heartbeat_fresh(blocker)
+        return True
+
+    for task in tasks:
+        status = str(task.get("status", "")).lower()
+        if status != "in_progress" or is_blocked(task):
+            continue
+        if task.get("title", "").strip().upper().startswith("CYCLE"):
+            continue
+        assigned_to = _assignee(task)
+        if assigned_to is None or not _heartbeat_fresh(task):
+            return task
 
     for task in tasks:
         if str(task.get("status", "")).lower() == "pending" and not is_blocked(task):

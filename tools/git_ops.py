@@ -65,7 +65,29 @@ def _parse_branch_status(output):
     return state
 
 
-def inspect_git_state(fetch=True):
+def is_lab_mode():
+    """Returns True if the current environment is a development lab."""
+    # 1. Environment variable override (highest precedence)
+    env_val = os.getenv("AUTODNA_LAB_MODE", "").strip().lower()
+    if env_val in {"1", "track", "true", "yes"}:
+        return True
+    if env_val in {"0", "false", "no"}:
+        return False
+
+    # 2. Directory name detection (e.g., /lab or /Autonomous-DNA-lab)
+    cwd = os.getcwd().lower()
+    if cwd.endswith("\\lab") or cwd.endswith("/lab") or "-lab" in cwd:
+        return True
+
+    # 3. Branch name detection
+    branch = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if branch and (branch.startswith("lab-") or branch.startswith("agent/")):
+        return True
+
+    return False
+
+
+def inspect_git_state(fetch=True, allow_dirty=False):
     state = {
         "ok": False,
         "issues": [],
@@ -86,6 +108,7 @@ def inspect_git_state(fetch=True):
         state["issues"].append("Unable to read git status.")
         return state
 
+    lab_mode = allow_dirty
     state.update(_parse_branch_status(status.stdout))
 
     if fetch and state["upstream"]:
@@ -103,9 +126,10 @@ def inspect_git_state(fetch=True):
 
     if not state["branch"] or state["branch"] in {"(detached)", "HEAD"}:
         state["issues"].append("Current checkout is detached; switch to a tracked branch before self-improve.")
-    if not state["upstream"]:
+    if not state["upstream"] and not lab_mode:
         state["issues"].append("Current branch has no upstream tracking branch.")
-    if state["dirty"]:
+    
+    if state["dirty"] and not lab_mode:
         state["issues"].append("Working tree has uncommitted or untracked changes.")
     if state["behind"] and state["ahead"]:
         state["issues"].append(

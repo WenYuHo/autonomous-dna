@@ -5,14 +5,18 @@ Manages TASK_QUEUE.json: reserve, complete, status.
 """
 
 import json
+import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_FILE = Path("agent/TASK_QUEUE.json")
+HEARTBEAT_TTL_SECONDS = int(os.getenv("AUTODNA_TASK_HEARTBEAT_TTL", "900"))
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def load_db():
     if not DB_FILE.exists():
@@ -20,62 +24,124 @@ def load_db():
         sys.exit(1)
     try:
         return json.loads(DB_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"ERROR: Failed to read {DB_FILE}: {e}")
+    except Exception as exc:
+        print(f"ERROR: Failed to read {DB_FILE}: {exc}")
         sys.exit(1)
+
 
 def save_db(db):
     DB_FILE.write_text(json.dumps(db, indent=2), encoding="utf-8")
 
+
+def _assignee(task):
+    assigned_to = task.get("assigned_to")
+    if isinstance(assigned_to, str):
+        assigned_to = assigned_to.strip()
+    return assigned_to or None
+
+
+def _parse_iso(value):
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def _heartbeat_fresh(task):
+    heartbeat = _parse_iso(task.get("heartbeat_at"))
+    if not heartbeat:
+        return False
+    return datetime.now(timezone.utc) - heartbeat <= timedelta(seconds=HEARTBEAT_TTL_SECONDS)
+
+
 def reserve(task_id: int, agent_id: str):
     db = load_db()
-    for t in db.get("tasks", []):
-        if t.get("id") == task_id:
-            if t.get("status") in {"completed", "done"}:
-                print(f"ERROR: Task {task_id} is already completed.")
-                sys.exit(1)
-            assigned = t.get("assigned_to")
-            if assigned and assigned != agent_id:
-                print(f"ERROR: Task {task_id} is already reserved by {assigned}.")
-                sys.exit(1)
-            
-            t["status"] = "in_progress"
-            t["assigned_to"] = agent_id
-            t["updated_at"] = now_iso()
-            save_db(db)
-            print(f"✅ Reserved Task #{task_id} for {agent_id}")
+    for task in db.get("tasks", []):
+        if task.get("id") != task_id:
+            continue
+
+        status = str(task.get("status", "")).lower()
+        if status in {"completed", "done"}:
+            print(f"ERROR: Task {task_id} is already completed.")
+            sys.exit(1)
+
+        assigned = _assignee(task)
+        if status == "in_progress" and assigned and assigned != agent_id and _heartbeat_fresh(task):
+            print(f"ERROR: Task {task_id} is already reserved by {assigned}.")
+            sys.exit(1)
+
+        task["status"] = "in_progress"
+        task["assigned_to"] = agent_id
+        task["updated_at"] = now_iso()
+        task["heartbeat_at"] = now_iso()
+        save_db(db)
+
+        if status == "in_progress" and assigned and assigned != agent_id:
+            print(f"[OK] Reclaimed stale Task #{task_id} from {assigned} for {agent_id}")
             return
+
+        print(f"[OK] Reserved Task #{task_id} for {agent_id}")
+        return
+
     print(f"ERROR: Task {task_id} not found.")
     sys.exit(1)
 
+
 def mark_done(task_id: int):
     db = load_db()
-    for t in db.get("tasks", []):
-        if t.get("id") == task_id:
-            t["status"] = "completed"
-            t["updated_at"] = now_iso()
-            save_db(db)
-            print(f"✅ Task #{task_id} marked as COMPLETED")
-            return
+    for task in db.get("tasks", []):
+        if task.get("id") != task_id:
+            continue
+        task["status"] = "completed"
+        task["updated_at"] = now_iso()
+        task["heartbeat_at"] = now_iso()
+        save_db(db)
+        print(f"[OK] Task #{task_id} marked as COMPLETED")
+        return
     print(f"ERROR: Task {task_id} not found.")
     sys.exit(1)
+
 
 def status():
     db = load_db()
     tasks = db.get("tasks", [])
-    in_progress = [t for t in tasks if t.get("status") == "in_progress"]
-    available = [t for t in tasks if t.get("status") == "pending"]
-    completed = [t for t in tasks if t.get("status") in {"completed", "done"}]
+    in_progress = []
+    stale_claimable = []
+    available = []
+    for task in tasks:
+        status_value = str(task.get("status", "")).lower()
+        if status_value == "in_progress":
+            if _heartbeat_fresh(task):
+                in_progress.append(task)
+            else:
+                stale_claimable.append(task)
+                available.append(task)
+        elif status_value == "pending":
+            available.append(task)
+    completed = [task for task in tasks if str(task.get("status", "")).lower() in {"completed", "done"}]
 
     print(f"\nIN PROGRESS: {len(in_progress)}")
-    for t in in_progress:
-        print(f"  [{t['id']}] {t['title']} (Assigned: {t['assigned_to']})")
-    
+    for task in in_progress:
+        assigned = _assignee(task) or "UNASSIGNED"
+        print(f"  [{task['id']}] {task['title']} (Assigned: {assigned})")
+
+    print(f"\nSTALE CLAIMABLE: {len(stale_claimable)}")
+    for task in stale_claimable:
+        assigned = _assignee(task) or "UNASSIGNED"
+        print(f"  [{task['id']}] {task['title']} (Last assigned: {assigned})")
+
     print(f"\nAVAILABLE: {len(available)}")
-    for t in available[:5]:
-        print(f"  [{t['id']}] {t['title']}")
-    
+    for task in available[:5]:
+        label = " [STALE]" if str(task.get("status", "")).lower() == "in_progress" else ""
+        print(f"  [{task['id']}] {task['title']}{label}")
+
     print(f"\nCOMPLETED: {len(completed)}")
+
 
 def main():
     args = sys.argv[1:]
@@ -102,6 +168,7 @@ def main():
         mark_done(task_id)
     else:
         print(f"Unknown command/args: {args}")
+
 
 if __name__ == "__main__":
     main()
