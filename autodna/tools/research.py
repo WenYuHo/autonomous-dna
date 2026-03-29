@@ -20,7 +20,7 @@ TRACKING_PARAMS = {
 DEFAULT_ARTIFACT_DIR = Path("agent/skills/auto_generated")
 
 class AgentBrowserSession:
-    def __init__(self, session_name="autodna-research", timeout=30):
+    def __init__(self, session_name="autodna-research", timeout=60):
         self.session_name = session_name
         self.timeout = timeout
 
@@ -150,7 +150,8 @@ def extract_links_from_page(session, exclude_patterns=None):
 
 def run_research(topic: str, max_sources: int, allow_domains: list[str], block_domains: list[str], dedupe_host: bool, dedupe_url: bool, timeout_ms: int, retries: int, session_name: str = "autodna-research", engine: str = "google", depth: int = 1, benchmark: bool = False) -> str:
     report_lines = [f"# Research Report: {topic}", ""]
-    session = AgentBrowserSession(session_name)
+    # Convert ms to seconds for the session
+    session = AgentBrowserSession(session_name, timeout=max(60, timeout_ms // 1000))
     exclude = ["google.com/search", "google.com/preferences", "bing.com/search", "perplexity.ai/search", "google.com/url"]
 
     try:
@@ -169,7 +170,8 @@ def run_research(topic: str, max_sources: int, allow_domains: list[str], block_d
             snapshot_str = str(snapshot).lower() if snapshot else ""
             bot_indicators = ["captcha", "unusual traffic", "not a robot", "security challenge", "cloudflare", "verify you are human"]
             if any(indicator in snapshot_str for indicator in bot_indicators):
-                print(f"  [agent-browser] ⚠️ Bot detection triggered on {engine}. Signaling fallback.")
+                matched = [i for i in bot_indicators if i in snapshot_str]
+                print(f"  [agent-browser] ⚠️ Bot detection triggered on {engine} (Matched: {matched}). Signaling fallback.")
                 return "FALLBACK_REQUIRED"
         except Exception:
             pass  # Snapshot failed, continue with link extraction

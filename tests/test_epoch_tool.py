@@ -6,6 +6,7 @@ Unit tests for autodna/tools/epoch.py retry helper.
 import subprocess
 from unittest.mock import patch
 
+import autodna.tools.epoch as epoch
 from autodna.tools.epoch import parse_improve_args, run_with_retries
 
 
@@ -73,3 +74,17 @@ def test_parse_improve_args_uses_env():
     with patch.dict("os.environ", {"AUTODNA_IMPROVE_ARGS": '--apply-cmd "echo hi"'}):
         args = parse_improve_args([])
         assert "--apply-cmd" in args
+
+
+def test_main_research_command_includes_timeout_ms():
+    with patch("autodna.tools.epoch.run_with_retries", return_value=True) as mock_run:
+        with patch(
+            "autodna.tools.topic_generator.identify_next_topic",
+            return_value=("stream reliability", "test"),
+        ):
+            with patch.object(subprocess, "run"):
+                with patch("sys.argv", ["epoch.py", "--no-taskgen", "--no-self-improve"]):
+                    epoch.main()
+
+    research_cmd = mock_run.call_args_list[0].args[0]
+    assert "--timeout-ms=120000" in research_cmd
