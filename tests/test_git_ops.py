@@ -259,3 +259,189 @@ def test_git_full_runs_end_to_end(monkeypatch):
         ("pr", "TASK_5", "details"),
         ("merge", "TASK_5", "https://example/pr/9"),
     ]
+
+
+def test_parse_worktree_list_porcelain_extracts_entries():
+    output = "\n".join(
+        [
+            "worktree C:/repo",
+            "HEAD abc123",
+            "branch refs/heads/dev",
+            "",
+            "worktree C:/tmp/codex-task10",
+            "HEAD def456",
+            "branch refs/heads/feat/task_10",
+            "prunable gitdir file points to non-existent location",
+            "locked by another process",
+        ]
+    )
+
+    parsed = git_ops._parse_worktree_list_porcelain(output)
+
+    assert len(parsed) == 2
+    assert parsed[0]["path"] == "C:/repo"
+    assert parsed[0]["branch"] == "dev"
+    assert parsed[0]["prunable"] is False
+    assert parsed[1]["path"] == "C:/tmp/codex-task10"
+    assert parsed[1]["branch"] == "feat/task_10"
+    assert parsed[1]["prunable"] is True
+    assert parsed[1]["locked"] is True
+
+
+def test_cleanup_merged_branch_artifacts_prunes_safe_worktree_and_branches(monkeypatch):
+    calls = []
+    snapshots = iter(
+        [
+            [
+                {"path": "C:/repo", "branch": "dev"},
+                {"path": "C:/tmp/codex-task10", "branch": "feat/task_10"},
+            ],
+            [{"path": "C:/repo", "branch": "dev"}],
+        ]
+    )
+
+    monkeypatch.setattr(git_ops, "_list_worktrees", lambda: next(snapshots))
+    monkeypatch.setattr(git_ops, "_repo_root_path", lambda: "C:/repo")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "dev")
+    monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: True)
+    monkeypatch.setattr(git_ops, "_remote_branch_exists", lambda branch: True)
+
+    def fake_run(cmd, check=False, cwd=None):
+        calls.append(cmd)
+        return _cp(cmd)
+
+    monkeypatch.setattr(git_ops, "run", fake_run)
+
+    result = git_ops._cleanup_merged_branch_artifacts("feat/task_10", "dev")
+
+    assert result["worktrees_removed"] == ["C:/tmp/codex-task10"]
+    assert result["local_branch_deleted"] is True
+    assert result["remote_branch_deleted"] is True
+    assert ["git", "worktree", "remove", "C:/tmp/codex-task10"] in calls
+    assert ["git", "branch", "-d", "feat/task_10"] in calls
+    assert ["git", "push", "origin", "--delete", "feat/task_10"] in calls
+
+
+def test_cleanup_merged_branch_artifacts_keeps_current_branch(monkeypatch):
+    calls = []
+    snapshots = iter(
+        [
+            [{"path": "C:/repo", "branch": "feat/task_10"}],
+            [{"path": "C:/repo", "branch": "feat/task_10"}],
+        ]
+    )
+
+    monkeypatch.setattr(git_ops, "_list_worktrees", lambda: next(snapshots))
+    monkeypatch.setattr(git_ops, "_repo_root_path", lambda: "C:/repo")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "feat/task_10")
+    monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: True)
+    monkeypatch.setattr(git_ops, "_remote_branch_exists", lambda branch: False)
+
+    def fake_run(cmd, check=False, cwd=None):
+        calls.append(cmd)
+        return _cp(cmd)
+
+    monkeypatch.setattr(git_ops, "run", fake_run)
+
+    result = git_ops._cleanup_merged_branch_artifacts("feat/task_10", "dev")
+
+    assert result["local_branch_deleted"] is False
+    assert ["git", "branch", "-d", "feat/task_10"] not in calls
+    assert ["git", "worktree", "remove", "C:/repo"] not in calls
+
+
+def test_git_merge_runs_repo_scoped_from_neutral_directory(monkeypatch):
+    merge_calls = []
+    cleanup_calls = []
+
+    class _FakeTempDir:
+        def __enter__(self):
+            return "C:/neutral"
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_view(pr_ref, field, repo=None):
+        fields = {
+            "headRefName": "feat/task_10",
+            "baseRefName": "dev",
+            "mergeStateStatus": "CLEAN",
+        }
+        return fields[field]
+
+    def fake_gh_run(args, repo=None, cwd=None, check=False):
+        if args[:2] == ["pr", "merge"]:
+            merge_calls.append((args, repo, cwd))
+        return _cp(args)
+
+    monkeypatch.setattr(git_ops, "_gh_available", lambda: True)
+    monkeypatch.setattr(git_ops, "_origin_repo_slug", lambda: "octo/lab")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "feat/task_10")
+    monkeypatch.setattr(git_ops, "_gh_pr_view_field", fake_view)
+    monkeypatch.setattr(git_ops, "monitor_ci", lambda *args, **kwargs: True)
+    monkeypatch.setattr(git_ops.tempfile, "TemporaryDirectory", lambda: _FakeTempDir())
+    monkeypatch.setattr(git_ops, "_gh_run", fake_gh_run)
+    monkeypatch.setattr(
+        git_ops,
+        "_cleanup_merged_branch_artifacts",
+        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+    )
+
+    ok = git_ops.git_merge("TASK_10", pr_ref="123")
+
+    assert ok is True
+    assert len(merge_calls) == 1
+    assert merge_calls[0][0][:3] == ["pr", "merge", "123"]
+    assert "--delete-branch" in merge_calls[0][0]
+    assert merge_calls[0][1] == "octo/lab"
+    assert merge_calls[0][2] == "C:/neutral"
+    assert cleanup_calls == [("feat/task_10", "dev")]
+
+
+def test_git_merge_recovers_from_worktree_conflict_without_manual_steps(monkeypatch):
+    merge_calls = []
+    cleanup_calls = []
+
+    class _FakeTempDir:
+        def __enter__(self):
+            return "C:/neutral"
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_view(pr_ref, field, repo=None):
+        fields = {
+            "headRefName": "feat/task_10",
+            "baseRefName": "dev",
+            "mergeStateStatus": "CLEAN",
+        }
+        return fields[field]
+
+    def fake_gh_run(args, repo=None, cwd=None, check=False):
+        if args[:2] == ["pr", "merge"]:
+            merge_calls.append(list(args))
+            if "--delete-branch" in args:
+                return _cp(args, rc=1, err="fatal: branch is already checked out at another worktree")
+            return _cp(args, rc=0)
+        return _cp(args)
+
+    monkeypatch.setattr(git_ops, "_gh_available", lambda: True)
+    monkeypatch.setattr(git_ops, "_origin_repo_slug", lambda: "octo/lab")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "feat/task_10")
+    monkeypatch.setattr(git_ops, "_gh_pr_view_field", fake_view)
+    monkeypatch.setattr(git_ops, "monitor_ci", lambda *args, **kwargs: True)
+    monkeypatch.setattr(git_ops.tempfile, "TemporaryDirectory", lambda: _FakeTempDir())
+    monkeypatch.setattr(git_ops, "_gh_run", fake_gh_run)
+    monkeypatch.setattr(
+        git_ops,
+        "_cleanup_merged_branch_artifacts",
+        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+    )
+
+    ok = git_ops.git_merge("TASK_10", pr_ref="123")
+
+    assert ok is True
+    assert len(merge_calls) == 2
+    assert merge_calls[0] == ["pr", "merge", "123", "--squash", "--delete-branch"]
+    assert merge_calls[1] == ["pr", "merge", "123", "--squash"]
+    assert cleanup_calls == [("feat/task_10", "dev")]

@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -50,8 +51,8 @@ NON_FAILING_COMMIT_PHRASES = (
 )
 
 
-def run(cmd, check=False):
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def run(cmd, check=False, cwd=None):
+    return subprocess.run(cmd, capture_output=True, text=True, check=check, cwd=cwd)
 
 
 def run_cmd(cmd):
@@ -339,17 +340,223 @@ def _gh_available():
     return run_cmd(["gh", "--version"]) is not None
 
 
-def _find_open_pr_for_head(head_branch):
-    prs = _run_json(
-        ["gh", "pr", "list", "--head", head_branch, "--state", "open", "--json", "url,number"]
-    )
+def _origin_repo_slug():
+    remote_url = run_cmd(["git", "remote", "get-url", "origin"])
+    if not remote_url:
+        return None
+    remote_url = remote_url.strip()
+    match = re.search(r"github\.com[:/](?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$", remote_url)
+    if not match:
+        return None
+    owner = match.group("owner")
+    repo = match.group("repo")
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
+
+
+def _gh_command(args, repo=None):
+    slug = repo or _origin_repo_slug()
+    if slug:
+        return ["gh", "--repo", slug, *args]
+    return ["gh", *args]
+
+
+def _gh_run(args, repo=None, cwd=None, check=False):
+    return run(_gh_command(args, repo=repo), check=check, cwd=cwd)
+
+
+def _gh_run_cmd(args, repo=None, cwd=None):
+    if repo is None and cwd is None:
+        return run_cmd(["gh", *args])
+    try:
+        return _gh_run(args, repo=repo, cwd=cwd, check=True).stdout.strip()
+    except Exception:
+        return None
+
+
+def _gh_run_json(args, repo=None, cwd=None):
+    if repo is None and cwd is None:
+        return _run_json(["gh", *args])
+    result = _gh_run(args, repo=repo, cwd=cwd, check=False)
+    if result.returncode != 0:
+        return None
+    output = (result.stdout or "").strip()
+    if not output:
+        return None
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
+
+
+def _find_open_pr_for_head(head_branch, repo=None):
+    prs = _gh_run_json(["pr", "list", "--head", head_branch, "--state", "open", "--json", "url,number"], repo=repo)
     if not prs:
         return None
     return prs[0].get("url") or str(prs[0].get("number"))
 
 
-def _gh_pr_view_field(pr_ref, field):
-    return run_cmd(["gh", "pr", "view", str(pr_ref), "--json", field, "--jq", f".{field}"])
+def _gh_pr_view_field(pr_ref, field, repo=None):
+    return _gh_run_cmd(["pr", "view", str(pr_ref), "--json", field, "--jq", f".{field}"], repo=repo)
+
+
+def _parse_worktree_list_porcelain(output):
+    worktrees = []
+    current = None
+    for raw_line in (output or "").splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            if current:
+                worktrees.append(current)
+                current = None
+            continue
+
+        key, _, value = line.partition(" ")
+        value = value.strip()
+        if key == "worktree":
+            if current:
+                worktrees.append(current)
+            current = {
+                "path": value,
+                "branch": None,
+                "head": None,
+                "bare": False,
+                "detached": False,
+                "locked": False,
+                "prunable": False,
+            }
+            continue
+        if current is None:
+            continue
+        if key == "branch":
+            current["branch"] = value.removeprefix("refs/heads/")
+        elif key == "HEAD":
+            current["head"] = value
+        elif key == "bare":
+            current["bare"] = True
+        elif key == "detached":
+            current["detached"] = True
+        elif key == "locked":
+            current["locked"] = True
+        elif key == "prunable":
+            current["prunable"] = True
+    if current:
+        worktrees.append(current)
+    return worktrees
+
+
+def _list_worktrees():
+    output = run_cmd(["git", "worktree", "list", "--porcelain"])
+    if output is None:
+        return []
+    return _parse_worktree_list_porcelain(output)
+
+
+def _repo_root_path():
+    root = run_cmd(["git", "rev-parse", "--show-toplevel"])
+    return root or os.getcwd()
+
+
+def _norm_path(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _is_same_path(left, right):
+    try:
+        return _norm_path(left) == _norm_path(right)
+    except Exception:
+        return False
+
+
+def _git_ref_exists(ref_name):
+    return run(["git", "rev-parse", "--verify", "--quiet", ref_name], check=False).returncode == 0
+
+
+def _is_branch_merged_into(branch, base_branch):
+    if not branch or not base_branch:
+        return False
+    merge_targets = [f"origin/{base_branch}", base_branch]
+    for target in merge_targets:
+        if not _git_ref_exists(target):
+            continue
+        probe = run(["git", "merge-base", "--is-ancestor", branch, target], check=False)
+        if probe.returncode == 0:
+            return True
+    return False
+
+
+def _remote_branch_exists(branch):
+    if not branch:
+        return False
+    probe = run(["git", "ls-remote", "--exit-code", "--heads", "origin", branch], check=False)
+    return probe.returncode == 0
+
+
+def _safe_remove_worktree(path, current_worktree_path):
+    if not path or _is_same_path(path, current_worktree_path):
+        return False
+    removed = run(["git", "worktree", "remove", path], check=False)
+    return removed.returncode == 0
+
+
+def _safe_delete_local_branch(branch, current_branch, branch_in_worktrees, base_branch):
+    if not branch or _is_protected_branch(branch):
+        return False
+    if current_branch and branch == current_branch:
+        return False
+    if branch_in_worktrees:
+        return False
+    if not _is_branch_merged_into(branch, base_branch):
+        return False
+    deleted = run(["git", "branch", "-d", branch], check=False)
+    return deleted.returncode == 0
+
+
+def _cleanup_merged_branch_artifacts(merged_branch, base_branch):
+    if not merged_branch or _is_protected_branch(merged_branch):
+        return {"worktrees_removed": [], "local_branch_deleted": False, "remote_branch_deleted": False}
+
+    current_branch = _current_branch()
+    current_worktree_path = _repo_root_path()
+    removed_paths = []
+
+    run(["git", "worktree", "prune"], check=False)
+    worktrees = _list_worktrees()
+    for worktree in worktrees:
+        if worktree.get("branch") != merged_branch:
+            continue
+        path = worktree.get("path")
+        if _safe_remove_worktree(path, current_worktree_path):
+            removed_paths.append(path)
+
+    run(["git", "worktree", "prune"], check=False)
+    run(["git", "fetch", "origin", "--prune"], check=False)
+
+    remaining = _list_worktrees()
+    branches_in_worktrees = {wt.get("branch") for wt in remaining if wt.get("branch")}
+    local_deleted = _safe_delete_local_branch(
+        merged_branch,
+        current_branch=current_branch,
+        branch_in_worktrees=(merged_branch in branches_in_worktrees),
+        base_branch=base_branch,
+    )
+
+    remote_deleted = False
+    if _remote_branch_exists(merged_branch):
+        remote_deleted = run(["git", "push", "origin", "--delete", merged_branch], check=False).returncode == 0
+
+    return {
+        "worktrees_removed": removed_paths,
+        "local_branch_deleted": local_deleted,
+        "remote_branch_deleted": remote_deleted,
+    }
+
+
+def _is_worktree_merge_conflict(message):
+    text = (message or "").lower()
+    checks = ("worktree", "already used by worktree", "already checked out")
+    return any(check in text for check in checks)
 
 
 def _parse_checks_state(checks):
@@ -367,11 +574,11 @@ def _parse_checks_state(checks):
     return "success"
 
 
-def monitor_ci(pr_ref, poll_seconds=None, max_polls=None):
+def monitor_ci(pr_ref, poll_seconds=None, max_polls=None, repo=None):
     poll_seconds = poll_seconds or int(os.getenv("AUTODNA_GIT_CI_POLL_SECONDS", "10"))
     max_polls = max_polls or int(os.getenv("AUTODNA_GIT_CI_MAX_POLLS", "30"))
     for _ in range(max_polls):
-        checks = _run_json(["gh", "pr", "checks", str(pr_ref), "--json", "state"])
+        checks = _gh_run_json(["pr", "checks", str(pr_ref), "--json", "state"], repo=repo)
         parsed = _parse_checks_state(checks)
         if parsed == "success":
             return True
@@ -433,6 +640,7 @@ def git_pr(task_id, body=""):
     if not _gh_available():
         return None
 
+    repo_slug = _origin_repo_slug()
     branch = _current_branch() or branch_name(task_id)
     base_branch = resolve_base_branch()
 
@@ -447,13 +655,16 @@ def git_pr(task_id, body=""):
         if pushed.returncode != 0:
             return None
 
-    existing = _find_open_pr_for_head(branch)
+    if repo_slug:
+        existing = _find_open_pr_for_head(branch, repo=repo_slug)
+    else:
+        existing = _find_open_pr_for_head(branch)
     if existing:
         print(f"OK: PR {existing}")
         return existing
 
     draft = os.getenv("AUTODNA_GIT_DRAFT_PR", "1").strip().lower() in {"1", "true", "yes"}
-    cmd = ["gh", "pr", "create", "--base", base_branch, "--head", branch]
+    cmd = ["pr", "create", "--base", base_branch, "--head", branch]
     if draft:
         cmd.append("--draft")
     if body:
@@ -461,7 +672,7 @@ def git_pr(task_id, body=""):
     else:
         cmd.append("--fill")
 
-    url = run_cmd(cmd)
+    url = _gh_run_cmd(cmd, repo=repo_slug)
     if url:
         print(f"PR opened: {url}")
     return url
@@ -471,16 +682,22 @@ def git_merge(task_id, pr_ref=None):
     if not _gh_available():
         return False
 
+    repo_slug = _origin_repo_slug()
     branch = _current_branch() or branch_name(task_id)
-    pr_ref = pr_ref or _find_open_pr_for_head(branch)
+    if not pr_ref:
+        if repo_slug:
+            pr_ref = _find_open_pr_for_head(branch, repo=repo_slug)
+        else:
+            pr_ref = _find_open_pr_for_head(branch)
     if not pr_ref:
         return False
 
+    head_branch = _gh_pr_view_field(pr_ref, "headRefName", repo=repo_slug) or branch
     max_rebases = int(os.getenv("AUTODNA_GIT_REBASE_MAX_ATTEMPTS", "3"))
-    base_branch = _gh_pr_view_field(pr_ref, "baseRefName") or resolve_base_branch()
+    base_branch = _gh_pr_view_field(pr_ref, "baseRefName", repo=repo_slug) or resolve_base_branch()
 
     for _ in range(max_rebases + 1):
-        merge_state = (_gh_pr_view_field(pr_ref, "mergeStateStatus") or "").upper()
+        merge_state = (_gh_pr_view_field(pr_ref, "mergeStateStatus", repo=repo_slug) or "").upper()
         if merge_state in {"BEHIND", "DIRTY"}:
             if not _rebase_with_retry(task_id, base_branch, max_attempts=max_rebases):
                 return False
@@ -492,18 +709,39 @@ def git_merge(task_id, pr_ref=None):
             continue
 
         if merge_state == "DRAFT":
-            run(["gh", "pr", "ready", str(pr_ref)], check=False)
+            _gh_run(["pr", "ready", str(pr_ref)], repo=repo_slug, check=False)
 
-        ci_status = monitor_ci(pr_ref)
+        ci_status = monitor_ci(pr_ref, repo=repo_slug)
         if ci_status is not True:
             return False
 
-        merged = run(["gh", "pr", "merge", str(pr_ref), "--squash", "--delete-branch"], check=False)
+        with tempfile.TemporaryDirectory() as neutral_cwd:
+            merged = _gh_run(
+                ["pr", "merge", str(pr_ref), "--squash", "--delete-branch"],
+                repo=repo_slug,
+                cwd=neutral_cwd,
+                check=False,
+            )
         if merged.returncode == 0:
+            _cleanup_merged_branch_artifacts(head_branch, base_branch)
             print(f"Merged and branch deleted: {pr_ref}")
             return True
 
         merge_text = f"{merged.stdout}\n{merged.stderr}".lower()
+        if _is_worktree_merge_conflict(merge_text):
+            with tempfile.TemporaryDirectory() as neutral_cwd:
+                retry_merge = _gh_run(
+                    ["pr", "merge", str(pr_ref), "--squash"],
+                    repo=repo_slug,
+                    cwd=neutral_cwd,
+                    check=False,
+                )
+            if retry_merge.returncode == 0:
+                _cleanup_merged_branch_artifacts(head_branch, base_branch)
+                print(f"Merged and branch deleted: {pr_ref}")
+                return True
+            merge_text = f"{retry_merge.stdout}\n{retry_merge.stderr}".lower()
+
         if "behind" in merge_text or "update branch" in merge_text:
             if not _rebase_with_retry(task_id, base_branch, max_attempts=max_rebases):
                 return False
