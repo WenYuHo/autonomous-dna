@@ -445,3 +445,63 @@ def test_git_merge_recovers_from_worktree_conflict_without_manual_steps(monkeypa
     assert merge_calls[0] == ["pr", "merge", "123", "--squash", "--delete-branch"]
     assert merge_calls[1] == ["pr", "merge", "123", "--squash"]
     assert cleanup_calls == [("feat/task_10", "dev")]
+
+
+def test_monitor_ci_treats_no_reported_checks_as_success(monkeypatch):
+    monkeypatch.setattr(
+        git_ops,
+        "_gh_run",
+        lambda args, repo=None, cwd=None, check=False: _cp(
+            args,
+            rc=1,
+            err="no checks reported on the 'feat/task_11' branch",
+        ),
+    )
+
+    assert git_ops.monitor_ci("123", poll_seconds=0, max_polls=1, repo="octo/lab") is True
+
+
+def test_git_merge_allows_merge_when_no_checks_are_reported(monkeypatch):
+    merge_calls = []
+    cleanup_calls = []
+
+    class _FakeTempDir:
+        def __enter__(self):
+            return "C:/neutral"
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_view(pr_ref, field, repo=None):
+        fields = {
+            "headRefName": "feat/task_11",
+            "baseRefName": "dev",
+            "mergeStateStatus": "CLEAN",
+        }
+        return fields[field]
+
+    def fake_gh_run(args, repo=None, cwd=None, check=False):
+        if args[:2] == ["pr", "checks"]:
+            return _cp(args, rc=1, err="no checks reported on the 'feat/task_11' branch")
+        if args[:2] == ["pr", "merge"]:
+            merge_calls.append((list(args), repo, cwd))
+            return _cp(args, rc=0)
+        return _cp(args, rc=0)
+
+    monkeypatch.setattr(git_ops, "_gh_available", lambda: True)
+    monkeypatch.setattr(git_ops, "_origin_repo_slug", lambda: "octo/lab")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "feat/task_11")
+    monkeypatch.setattr(git_ops, "_gh_pr_view_field", fake_view)
+    monkeypatch.setattr(git_ops.tempfile, "TemporaryDirectory", lambda: _FakeTempDir())
+    monkeypatch.setattr(git_ops, "_gh_run", fake_gh_run)
+    monkeypatch.setattr(
+        git_ops,
+        "_cleanup_merged_branch_artifacts",
+        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+    )
+
+    ok = git_ops.git_merge("TASK_11", pr_ref="123")
+
+    assert ok is True
+    assert merge_calls == [(["pr", "merge", "123", "--squash", "--delete-branch"], "octo/lab", "C:/neutral")]
+    assert cleanup_calls == [("feat/task_11", "dev")]

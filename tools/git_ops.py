@@ -574,11 +574,28 @@ def _parse_checks_state(checks):
     return "success"
 
 
+def _gh_pr_checks(pr_ref, repo=None):
+    result = _gh_run(["pr", "checks", str(pr_ref), "--json", "state"], repo=repo, check=False)
+    if result.returncode == 0:
+        output = (result.stdout or "").strip()
+        if not output:
+            return []
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return None
+
+    message = f"{result.stdout}\n{result.stderr}".lower()
+    if "no checks reported" in message:
+        return []
+    return None
+
+
 def monitor_ci(pr_ref, poll_seconds=None, max_polls=None, repo=None):
     poll_seconds = poll_seconds or int(os.getenv("AUTODNA_GIT_CI_POLL_SECONDS", "10"))
     max_polls = max_polls or int(os.getenv("AUTODNA_GIT_CI_MAX_POLLS", "30"))
     for _ in range(max_polls):
-        checks = _gh_run_json(["pr", "checks", str(pr_ref), "--json", "state"], repo=repo)
+        checks = _gh_pr_checks(pr_ref, repo=repo)
         parsed = _parse_checks_state(checks)
         if parsed == "success":
             return True
