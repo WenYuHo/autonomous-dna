@@ -4,13 +4,11 @@ Unit tests for tools/trace_logger.py — Autonomous-DNA observability system.
 """
 
 import json
-import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 # Add project root to path so we can import trace_logger
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -68,11 +66,11 @@ class TestTraceLogger(unittest.TestCase):
 
         trace_file = trace_logger.TRACES_DIR / f"{sid}.jsonl"
         with open(trace_file, "r") as f:
-            lines = [l.strip() for l in f.readlines() if l.strip()]
+            lines = [line.strip() for line in f.readlines() if line.strip()]
 
         self.assertEqual(len(lines), 3, "Should have 3 trace entries")
 
-        entries = [json.loads(l) for l in lines]
+        entries = [json.loads(line) for line in lines]
         self.assertEqual(entries[0]["action"], "reserve")
         self.assertEqual(entries[1]["action"], "plan")
         self.assertEqual(entries[2]["action"], "implement")

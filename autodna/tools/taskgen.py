@@ -1,0 +1,302 @@
+﻿import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional, Tuple
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+DEFAULT_QUEUE_PATH = Path("agent/TASK_QUEUE.json")
+DEFAULT_ARTIFACT_DIR = Path("agent/skills/auto_generated")
+UNBLOCKED_STATUSES = {"done", "info", "completed"}
+ACTIONABLE_STATUSES = {"pending", "in_progress", "error", "blocked"}
+ACTIVE_BLOCKER_STATUSES = {"in_progress"}
+HEARTBEAT_TTL_SECONDS = int(os.getenv("AUTODNA_TASK_HEARTBEAT_TTL", "900"))
+
+
+def load_queue(path: Path) -> dict:
+    if not path.exists():
+        return {"tasks": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_queue(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def get_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _task_by_id(tasks: list[dict]) -> dict:
+    return {t.get("id"): t for t in tasks if isinstance(t.get("id"), int)}
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(cleaned)
+    except Exception:
+        return None
+
+
+def _heartbeat_fresh(task: dict, ttl_seconds: int = HEARTBEAT_TTL_SECONDS) -> bool:
+    heartbeat = _parse_iso(task.get("heartbeat_at"))
+    if not heartbeat:
+        return False
+    now = datetime.now(timezone.utc)
+    return now - heartbeat <= timedelta(seconds=ttl_seconds)
+
+
+def _is_blocked(task: dict, by_id: dict) -> bool:
+    blocked_by = task.get("blocked_by")
+    if blocked_by is None:
+        return False
+    blocker = by_id.get(blocked_by)
+    if not blocker:
+        return False
+    status = str(blocker.get("status", "")).lower()
+    if status in UNBLOCKED_STATUSES:
+        return False
+    if status == "in_progress":
+        return _heartbeat_fresh(blocker)
+    return True
+
+def has_actionable_tasks(tasks: list[dict]) -> bool:
+    by_id = _task_by_id(tasks)
+    for task in tasks:
+        if task.get("status") not in ACTIONABLE_STATUSES:
+            continue
+        title = task.get("title", "")
+        if title.strip().upper().startswith("CYCLE"):
+            continue
+        if _is_blocked(task, by_id):
+            continue
+        return True
+    return False
+
+
+def max_task_id(tasks: list[dict]) -> int:
+    ids = [t.get("id") for t in tasks if isinstance(t.get("id"), int)]
+    return max(ids) if ids else 0
+
+
+def max_cycle_number(tasks: list[dict]) -> int:
+    max_cycle = 0
+    for task in tasks:
+        cycle_val = task.get("cycle")
+        if isinstance(cycle_val, int):
+            max_cycle = max(max_cycle, cycle_val)
+        title = task.get("title", "")
+        match = re.search(r"cycle\s+(\d+)", title, re.IGNORECASE)
+        if match:
+            try:
+                max_cycle = max(max_cycle, int(match.group(1)))
+            except ValueError:
+                pass
+    return max_cycle
+
+
+def find_latest_artifact(dir_path: Path) -> Optional[Path]:
+    if not dir_path.exists():
+        return None
+    candidates = sorted(
+        [p for p in dir_path.glob("*.md") if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def build_cycle_tasks(
+    start_id: int,
+    cycle_number: int,
+    artifact_path: Optional[Path],
+) -> list[dict]:
+    artifact_ref = str(artifact_path) if artifact_path else "NONE"
+    now = get_now()
+
+    cycle_id = start_id
+    research_id = start_id + 1
+    improve_id = start_id + 2
+    eval_id = start_id + 3
+
+    cycle_task = {
+        "id": cycle_id,
+        "title": f"CYCLE {cycle_number} — AUTOGEN: Research Synthesis",
+        "description": "Auto-generated cycle to turn research into actionable improvements.",
+        "ref": artifact_ref,
+        "status": "info",
+        "assigned_to": None,
+        "updated_at": now,
+        "cycle": cycle_number,
+    }
+
+    research_task = {
+        "id": research_id,
+        "title": "[RESEARCH] Synthesize improvements from latest research",
+        "description": (
+            "Review the latest research artifact and extract 3 candidate improvements.\n\n"
+            "Recipe:\n"
+            "1. Read the provided research artifact.\n"
+            "2. Identify 3 distinct high-value technical improvements.\n"
+            "3. For each, document the evidence, benefit, and a test plan.\n"
+            "4. Update the descriptions of the subsequent [IMPROVE] and [EVAL] tasks in TASK_QUEUE.json with concrete criteria.\n\n"
+            "Acceptance Criteria:\n"
+            "- 3 improvements extracted with full metadata.\n"
+            "- Future tasks in this cycle updated with implementation details."
+        ),
+        "ref": artifact_ref,
+        "status": "pending",
+        "assigned_to": None,
+        "updated_at": now,
+        "cycle": cycle_number,
+    }
+
+    improve_task = {
+        "id": improve_id,
+        "title": "[IMPROVE] Implement highest-value improvement",
+        "description": (
+            "Implement the top-ranked improvement from the synthesis task.\n\n"
+            "Recipe:\n"
+            "1. Review the acceptance criteria added by the [RESEARCH] task.\n"
+            "2. Implement the changes in the main workspace.\n"
+            "3. Update or add tests to verify the new functionality.\n"
+            "4. Run the full test suite to ensure no regressions.\n\n"
+            "Acceptance Criteria:\n"
+            "- Feature implemented according to research specs.\n"
+            "- All tests pass successfully."
+        ),
+        "ref": artifact_ref,
+        "status": "pending",
+        "assigned_to": None,
+        "updated_at": now,
+        "blocked_by": research_id,
+        "cycle": cycle_number,
+    }
+
+    eval_task = {
+        "id": eval_id,
+        "title": "[EVAL] Validate improvement impact",
+        "description": (
+            "Evaluate the implemented improvement using existing eval tools or reports.\n\n"
+            "Recipe:\n"
+            "1. Run the evaluation suite or baseline/after comparisons.\n"
+            "2. Record the quantitative and qualitative results.\n"
+            "3. Decide whether to keep the improvement or revert based on impact.\n\n"
+            "Acceptance Criteria:\n"
+            "- Evaluation report generated in agent/reports.\n"
+            "- Clear recommendation (keep/revert) documented."
+        ),
+        "ref": artifact_ref,
+        "status": "pending",
+        "assigned_to": None,
+        "updated_at": now,
+        "blocked_by": improve_id,
+        "cycle": cycle_number,
+    }
+
+    return [cycle_task, research_task, improve_task, eval_task]
+
+
+def _artifact_already_used(tasks: list[dict], artifact_path: Path) -> bool:
+    ref = str(artifact_path)
+    for task in tasks:
+        if task.get("ref") != ref:
+            continue
+        title = task.get("title", "")
+        if "AUTOGEN" in title.upper() and title.strip().upper().startswith("CYCLE"):
+            return True
+    return False
+
+
+def run_taskgen(
+    queue_path: Path,
+    artifact_path: Optional[Path],
+    if_empty: bool,
+    dry_run: bool,
+    allow_repeat: bool = False,
+) -> Tuple[bool, int]:
+    db = load_queue(queue_path)
+    tasks = db.get("tasks", [])
+
+    if if_empty and has_actionable_tasks(tasks):
+        return False, 0
+
+    artifact = artifact_path or find_latest_artifact(DEFAULT_ARTIFACT_DIR)
+    if artifact is None:
+        return False, 0
+    if not allow_repeat and _artifact_already_used(tasks, artifact):
+        return False, 0
+    cycle_number = max_cycle_number(tasks) + 1
+    start_id = max_task_id(tasks) + 1
+    new_tasks = build_cycle_tasks(start_id, cycle_number, artifact)
+
+    if dry_run:
+        return True, len(new_tasks)
+
+    db.setdefault("tasks", []).extend(new_tasks)
+    save_queue(queue_path, db)
+    return True, len(new_tasks)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Autonomous DNA Task Generator")
+    parser.add_argument(
+        "--queue",
+        default=str(DEFAULT_QUEUE_PATH),
+        help="Path to TASK_QUEUE.json",
+    )
+    parser.add_argument(
+        "--artifact",
+        default=None,
+        help="Path to research artifact (default: latest in agent/skills/auto_generated)",
+    )
+    parser.add_argument(
+        "--if-empty",
+        action="store_true",
+        help="Only generate tasks when no actionable pending tasks exist",
+    )
+    parser.add_argument(
+        "--allow-repeat",
+        action="store_true",
+        help="Allow generating tasks from the same artifact more than once",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print what would happen without writing")
+
+    args = parser.parse_args()
+    queue_path = Path(args.queue)
+    artifact_path = Path(args.artifact) if args.artifact else None
+
+    created, count = run_taskgen(
+        queue_path=queue_path,
+        artifact_path=artifact_path,
+        if_empty=args.if_empty,
+        dry_run=args.dry_run,
+        allow_repeat=args.allow_repeat,
+    )
+    if not created:
+        if not find_latest_artifact(DEFAULT_ARTIFACT_DIR):
+            print("No research artifact found. Skipping task generation.")
+        else:
+            print("Task generation skipped.")
+        return
+    if args.dry_run:
+        print(f"[DRY RUN] Would add {count} task(s) to {queue_path}")
+        return
+    print(f"Added {count} task(s) to {queue_path}")
+
+
+if __name__ == "__main__":
+    main()

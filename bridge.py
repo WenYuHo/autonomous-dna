@@ -11,6 +11,7 @@ Platform detection order matters:
 """
 
 import os
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +65,26 @@ def ensure_state_files(root: Path) -> list:
             f"    - Done: NONE\n"
         )
         created.append("agent/TASK_QUEUE.md")
+
+    tq_json = root / "agent" / "TASK_QUEUE.json"
+    if not tq_json.exists():
+        tq_json.write_text(
+            json.dumps({
+                "tasks": [
+                    {
+                        "id": 1,
+                        "title": "INITIAL_SETUP",
+                        "description": "Verify scaffold and define first real task. Confirm AGENTS.md, tools/, skills/, and platform config are present.",
+                        "ref": "NONE",
+                        "status": "pending",
+                        "assigned_to": None,
+                        "updated_at": now
+                    }
+                ]
+            }, indent=2),
+            encoding="utf-8"
+        )
+        created.append("agent/TASK_QUEUE.json")
 
     mem = root / "agent" / "MEMORY.md"
     if not mem.exists():

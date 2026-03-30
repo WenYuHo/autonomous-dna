@@ -15,7 +15,7 @@ def is_text_file(filepath):
             chunk = f.read(1024)
             if b'\0' in chunk:
                 return False  # Binary file usually contains null bytes
-            
+
             # Additional check: try decoding as utf-8
             chunk.decode('utf-8')
             return True
@@ -45,38 +45,38 @@ def benchmark_directory(target_dir):
         return
 
     ignore_list = get_ignore_list(target)
-    
+
     total_files = 0
     total_bytes = 0
     total_lines = 0
-    
+
     start_time = time.time()
-    
+
     print(f"🔍 Scanning directory: {target} ...\n")
-    
+
     for root, dirs, files in os.walk(target):
         # Mutating dirs in place prevents os.walk from entering ignored directories
         dirs[:] = [d for d in dirs if d not in ignore_list]
-        
+
         for file in files:
             # Basic ignore exclusions
             if file in ignore_list or any(file.endswith(ext) for ext in [".pyc", ".pyo", ".pyd", ".exe", ".dll"]):
                 continue
-                
+
             filepath = Path(root) / file
-            
+
             # Double check ignore patterns that might be subpaths
             if any(ignored in filepath.parts for ignored in ignore_list):
                  continue
 
             if not is_text_file(filepath):
                 continue
-                
+
             try:
                 stat = filepath.stat()
                 total_bytes += stat.st_size
                 total_files += 1
-                
+
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                     total_lines += content.count('\n') + 1
@@ -84,13 +84,13 @@ def benchmark_directory(target_dir):
             except Exception as e:
                 # Silently skip files we can't read
                 pass
-                
+
     end_time = time.time()
     duration = end_time - start_time
-    
+
     # Simple proxy tokenizer matching average BPE logic (1 token ~= 4 chars/bytes in English)
     estimated_tokens = total_bytes / 4
-    
+
     print("📊 --- BENCHMARK RESULTS ---")
     print(f"⏱️  Time Elapsed   : {duration:.4f} seconds")
     print(f"📁 Files Scanned  : {total_files:,}")
@@ -98,7 +98,7 @@ def benchmark_directory(target_dir):
     print(f"💾 Total Size     : {total_bytes / 1024:.2f} KB ({total_bytes:,} bytes)")
     print(f"🪙  Est. Tokens    : ~{estimated_tokens:,.0f} tokens")
     print("----------------------------")
-    
+
     # Calculate burn rate (assuming full context load)
     if duration > 0:
         token_rate = estimated_tokens / duration
@@ -106,10 +106,10 @@ def benchmark_directory(target_dir):
 
 
 def main():
-    # Parse exactly what's given, allowing the main CLI to pass --target-dir 
+    # Parse exactly what's given, allowing the main CLI to pass --target-dir
     parser = argparse.ArgumentParser(description="Autonomous DNA Token Benchmark Utility")
     parser.add_argument("--target-dir", default=".", help="Directory to scan (defaults to current directory)")
-    
+
     # Because this is called via `autodna benchmark <args>`, we slice off the first two if they exist,
     # OR we just let parse_args handle the generic injection from `cli.py`.
     # `cli.py` already overrides sys.argv correctly now.
