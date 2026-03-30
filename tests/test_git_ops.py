@@ -422,6 +422,54 @@ def test_cleanup_merged_branch_artifacts_force_deletes_confirmed_squash_merged_b
     assert ["git", "branch", "-d", "feat/task_13"] not in calls
 
 
+def test_cleanup_merged_branch_artifacts_force_removes_confirmed_worktree(monkeypatch):
+    calls = []
+    snapshots = iter(
+        [
+            [
+                {"path": "C:/repo", "branch": "dev"},
+                {"path": "C:/tmp/codex-task14", "branch": "feat/task_14", "locked": False},
+            ],
+            [{"path": "C:/repo", "branch": "dev"}],
+        ]
+    )
+
+    monkeypatch.setattr(git_ops, "_list_worktrees", lambda: next(snapshots))
+    monkeypatch.setattr(git_ops, "_repo_root_path", lambda: "C:/repo")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "dev")
+    monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: True)
+    monkeypatch.setattr(git_ops, "_remote_branch_exists", lambda branch: False)
+
+    def fake_run(cmd, check=False, cwd=None):
+        calls.append(cmd)
+        if cmd == ["git", "worktree", "remove", "C:/tmp/codex-task14"]:
+            return _cp(cmd, rc=1, err="contains modified or untracked files")
+        return _cp(cmd)
+
+    monkeypatch.setattr(git_ops, "run", fake_run)
+
+    result = git_ops._cleanup_merged_branch_artifacts("feat/task_14", "dev", confirmed_merged=True)
+
+    assert result["worktrees_removed"] == ["C:/tmp/codex-task14"]
+    assert ["git", "worktree", "remove", "C:/tmp/codex-task14"] in calls
+    assert ["git", "worktree", "remove", "--force", "C:/tmp/codex-task14"] in calls
+
+
+def test_safe_remove_worktree_refuses_locked_worktree_even_when_confirmed_merged(monkeypatch):
+    commands = []
+    monkeypatch.setattr(git_ops, "run", lambda cmd, check=False, cwd=None: commands.append(cmd) or _cp(cmd))
+
+    removed = git_ops._safe_remove_worktree(
+        "C:/tmp/codex-task14",
+        "C:/repo",
+        confirmed_merged=True,
+        locked=True,
+    )
+
+    assert removed is False
+    assert commands == []
+
+
 def test_safe_delete_local_branch_refuses_in_use_branch_even_when_confirmed_merged(monkeypatch):
     commands = []
     monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: False)

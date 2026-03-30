@@ -513,11 +513,18 @@ def _remote_branch_exists(branch):
     return probe.returncode == 0
 
 
-def _safe_remove_worktree(path, current_worktree_path):
+def _safe_remove_worktree(path, current_worktree_path, confirmed_merged=False, locked=False):
     if not path or _is_same_path(path, current_worktree_path):
         return False
+    if locked:
+        return False
     removed = run(["git", "worktree", "remove", path], check=False)
-    return removed.returncode == 0
+    if removed.returncode == 0:
+        return True
+    if not confirmed_merged:
+        return False
+    forced = run(["git", "worktree", "remove", "--force", path], check=False)
+    return forced.returncode == 0
 
 
 def _safe_delete_local_branch(branch, current_branch, branch_in_worktrees, base_branch, confirmed_merged=False):
@@ -550,7 +557,12 @@ def _cleanup_merged_branch_artifacts(merged_branch, base_branch, confirmed_merge
         if worktree.get("branch") != merged_branch:
             continue
         path = worktree.get("path")
-        if _safe_remove_worktree(path, current_worktree_path):
+        if _safe_remove_worktree(
+            path,
+            current_worktree_path,
+            confirmed_merged=confirmed_merged,
+            locked=worktree.get("locked", False),
+        ):
             removed_paths.append(path)
 
     run(["git", "worktree", "prune"], check=False)
