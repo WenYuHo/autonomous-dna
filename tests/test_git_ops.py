@@ -20,6 +20,22 @@ def test_branch_name_uses_prefix_and_description(monkeypatch):
     assert git_ops.branch_name("TASK_5", "Fix Queue flow") == "chore/task_5-fix-queue-flow"
 
 
+def test_run_uses_utf8_decoding_for_git_commands(monkeypatch):
+    calls = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _cp(cmd, out="worktree C:/Users/tony5/OneDrive/桌面/lab")
+
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_subprocess_run)
+
+    result = git_ops.run(["git", "worktree", "list", "--porcelain"])
+
+    assert result.stdout == "worktree C:/Users/tony5/OneDrive/桌面/lab"
+    assert calls[0][1]["encoding"] == "utf-8"
+    assert calls[0][1]["errors"] == "replace"
+
+
 def test_run_tests_skips_when_disabled(monkeypatch):
     monkeypatch.setenv("AUTODNA_GIT_TEST_CMD", "")
     called = {"count": 0}
@@ -288,6 +304,34 @@ def test_parse_worktree_list_porcelain_extracts_entries():
     assert parsed[1]["locked"] is True
 
 
+def test_list_worktrees_preserves_non_ascii_paths(monkeypatch):
+    monkeypatch.setattr(
+        git_ops,
+        "run_cmd",
+        lambda cmd: "\n".join(
+            [
+                "worktree C:/Users/tony5/OneDrive/桌面/Autonomous-DNA-Workspace/lab",
+                "HEAD abc123",
+                "branch refs/heads/feat/task_12",
+            ]
+        ),
+    )
+
+    worktrees = git_ops._list_worktrees()
+
+    assert worktrees == [
+        {
+            "path": "C:/Users/tony5/OneDrive/桌面/Autonomous-DNA-Workspace/lab",
+            "branch": "feat/task_12",
+            "head": "abc123",
+            "bare": False,
+            "detached": False,
+            "locked": False,
+            "prunable": False,
+        }
+    ]
+
+
 def test_cleanup_merged_branch_artifacts_prunes_safe_worktree_and_branches(monkeypatch):
     calls = []
     snapshots = iter(
@@ -350,6 +394,51 @@ def test_cleanup_merged_branch_artifacts_keeps_current_branch(monkeypatch):
     assert ["git", "worktree", "remove", "C:/repo"] not in calls
 
 
+def test_cleanup_merged_branch_artifacts_force_deletes_confirmed_squash_merged_branch(monkeypatch):
+    calls = []
+    snapshots = iter(
+        [
+            [{"path": "C:/repo", "branch": "dev"}],
+            [{"path": "C:/repo", "branch": "dev"}],
+        ]
+    )
+
+    monkeypatch.setattr(git_ops, "_list_worktrees", lambda: next(snapshots))
+    monkeypatch.setattr(git_ops, "_repo_root_path", lambda: "C:/repo")
+    monkeypatch.setattr(git_ops, "_current_branch", lambda: "dev")
+    monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: False)
+    monkeypatch.setattr(git_ops, "_remote_branch_exists", lambda branch: False)
+
+    def fake_run(cmd, check=False, cwd=None):
+        calls.append(cmd)
+        return _cp(cmd)
+
+    monkeypatch.setattr(git_ops, "run", fake_run)
+
+    result = git_ops._cleanup_merged_branch_artifacts("feat/task_13", "dev", confirmed_merged=True)
+
+    assert result["local_branch_deleted"] is True
+    assert ["git", "branch", "-D", "feat/task_13"] in calls
+    assert ["git", "branch", "-d", "feat/task_13"] not in calls
+
+
+def test_safe_delete_local_branch_refuses_in_use_branch_even_when_confirmed_merged(monkeypatch):
+    commands = []
+    monkeypatch.setattr(git_ops, "_is_branch_merged_into", lambda branch, base: False)
+    monkeypatch.setattr(git_ops, "run", lambda cmd, check=False, cwd=None: commands.append(cmd) or _cp(cmd))
+
+    deleted = git_ops._safe_delete_local_branch(
+        "feat/task_13",
+        current_branch="dev",
+        branch_in_worktrees=True,
+        base_branch="dev",
+        confirmed_merged=True,
+    )
+
+    assert deleted is False
+    assert commands == []
+
+
 def test_git_merge_runs_repo_scoped_from_neutral_directory(monkeypatch):
     merge_calls = []
     cleanup_calls = []
@@ -384,7 +473,9 @@ def test_git_merge_runs_repo_scoped_from_neutral_directory(monkeypatch):
     monkeypatch.setattr(
         git_ops,
         "_cleanup_merged_branch_artifacts",
-        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+        lambda merged_branch, base_branch, confirmed_merged=False: cleanup_calls.append(
+            (merged_branch, base_branch, confirmed_merged)
+        ),
     )
 
     ok = git_ops.git_merge("TASK_10", pr_ref="123")
@@ -395,7 +486,7 @@ def test_git_merge_runs_repo_scoped_from_neutral_directory(monkeypatch):
     assert "--delete-branch" in merge_calls[0][0]
     assert merge_calls[0][1] == "octo/lab"
     assert merge_calls[0][2] == "C:/neutral"
-    assert cleanup_calls == [("feat/task_10", "dev")]
+    assert cleanup_calls == [("feat/task_10", "dev", True)]
 
 
 def test_git_merge_recovers_from_worktree_conflict_without_manual_steps(monkeypatch):
@@ -435,7 +526,9 @@ def test_git_merge_recovers_from_worktree_conflict_without_manual_steps(monkeypa
     monkeypatch.setattr(
         git_ops,
         "_cleanup_merged_branch_artifacts",
-        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+        lambda merged_branch, base_branch, confirmed_merged=False: cleanup_calls.append(
+            (merged_branch, base_branch, confirmed_merged)
+        ),
     )
 
     ok = git_ops.git_merge("TASK_10", pr_ref="123")
@@ -444,7 +537,7 @@ def test_git_merge_recovers_from_worktree_conflict_without_manual_steps(monkeypa
     assert len(merge_calls) == 2
     assert merge_calls[0] == ["pr", "merge", "123", "--squash", "--delete-branch"]
     assert merge_calls[1] == ["pr", "merge", "123", "--squash"]
-    assert cleanup_calls == [("feat/task_10", "dev")]
+    assert cleanup_calls == [("feat/task_10", "dev", True)]
 
 
 def test_monitor_ci_treats_no_reported_checks_as_success(monkeypatch):
@@ -497,11 +590,13 @@ def test_git_merge_allows_merge_when_no_checks_are_reported(monkeypatch):
     monkeypatch.setattr(
         git_ops,
         "_cleanup_merged_branch_artifacts",
-        lambda merged_branch, base_branch: cleanup_calls.append((merged_branch, base_branch)),
+        lambda merged_branch, base_branch, confirmed_merged=False: cleanup_calls.append(
+            (merged_branch, base_branch, confirmed_merged)
+        ),
     )
 
     ok = git_ops.git_merge("TASK_11", pr_ref="123")
 
     assert ok is True
     assert merge_calls == [(["pr", "merge", "123", "--squash", "--delete-branch"], "octo/lab", "C:/neutral")]
-    assert cleanup_calls == [("feat/task_11", "dev")]
+    assert cleanup_calls == [("feat/task_11", "dev", True)]

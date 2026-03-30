@@ -51,8 +51,28 @@ NON_FAILING_COMMIT_PHRASES = (
 )
 
 
+def _uses_utf8_cli_encoding(cmd):
+    if isinstance(cmd, (list, tuple)) and cmd:
+        executable = str(cmd[0])
+    else:
+        executable = str(cmd)
+    executable = os.path.basename(executable).lower()
+    return executable in {"git", "git.exe", "gh", "gh.exe"}
+
+
 def run(cmd, check=False, cwd=None):
-    return subprocess.run(cmd, capture_output=True, text=True, check=check, cwd=cwd)
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "check": check,
+        "cwd": cwd,
+    }
+    if _uses_utf8_cli_encoding(cmd):
+        # Git and gh emit UTF-8 on Windows for repo metadata and paths; forcing it here
+        # avoids locale-dependent decode failures for non-ASCII worktree paths.
+        kwargs["encoding"] = "utf-8"
+        kwargs["errors"] = "replace"
+    return subprocess.run(cmd, **kwargs)
 
 
 def run_cmd(cmd):
@@ -500,20 +520,23 @@ def _safe_remove_worktree(path, current_worktree_path):
     return removed.returncode == 0
 
 
-def _safe_delete_local_branch(branch, current_branch, branch_in_worktrees, base_branch):
+def _safe_delete_local_branch(branch, current_branch, branch_in_worktrees, base_branch, confirmed_merged=False):
     if not branch or _is_protected_branch(branch):
         return False
     if current_branch and branch == current_branch:
         return False
     if branch_in_worktrees:
         return False
-    if not _is_branch_merged_into(branch, base_branch):
+    if _is_branch_merged_into(branch, base_branch):
+        deleted = run(["git", "branch", "-d", branch], check=False)
+        return deleted.returncode == 0
+    if not confirmed_merged:
         return False
-    deleted = run(["git", "branch", "-d", branch], check=False)
+    deleted = run(["git", "branch", "-D", branch], check=False)
     return deleted.returncode == 0
 
 
-def _cleanup_merged_branch_artifacts(merged_branch, base_branch):
+def _cleanup_merged_branch_artifacts(merged_branch, base_branch, confirmed_merged=False):
     if not merged_branch or _is_protected_branch(merged_branch):
         return {"worktrees_removed": [], "local_branch_deleted": False, "remote_branch_deleted": False}
 
@@ -540,6 +563,7 @@ def _cleanup_merged_branch_artifacts(merged_branch, base_branch):
         current_branch=current_branch,
         branch_in_worktrees=(merged_branch in branches_in_worktrees),
         base_branch=base_branch,
+        confirmed_merged=confirmed_merged,
     )
 
     remote_deleted = False
@@ -740,7 +764,7 @@ def git_merge(task_id, pr_ref=None):
                 check=False,
             )
         if merged.returncode == 0:
-            _cleanup_merged_branch_artifacts(head_branch, base_branch)
+            _cleanup_merged_branch_artifacts(head_branch, base_branch, confirmed_merged=True)
             print(f"Merged and branch deleted: {pr_ref}")
             return True
 
@@ -754,7 +778,7 @@ def git_merge(task_id, pr_ref=None):
                     check=False,
                 )
             if retry_merge.returncode == 0:
-                _cleanup_merged_branch_artifacts(head_branch, base_branch)
+                _cleanup_merged_branch_artifacts(head_branch, base_branch, confirmed_merged=True)
                 print(f"Merged and branch deleted: {pr_ref}")
                 return True
             merge_text = f"{retry_merge.stdout}\n{retry_merge.stderr}".lower()
