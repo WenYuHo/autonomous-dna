@@ -27,6 +27,7 @@ def test_build_agent_mission_for_specific_task():
     assert "task 12" in mission
     assert "tasks claim 12 autodna" in mission
     assert "tasks complete 12" in mission
+    assert "controller will rerun the required tests and dogfood evaluation" in mission
     assert "inspect leftover modified/untracked files" in mission
     assert "brainstorm one small adjacent improvement" in mission
 
@@ -35,6 +36,7 @@ def test_build_agent_mission_without_task():
     mission = engine_start.build_agent_mission("autodna")
     assert "Resume any task already assigned to you" in mission
     assert "tasks claim <id> autodna" in mission
+    assert "controller will rerun the required tests and dogfood evaluation" in mission
     assert "Stay in the main workspace" in mission
     assert "tasks add" in mission
 

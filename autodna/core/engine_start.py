@@ -69,6 +69,8 @@ def _autonomy_clause(cmd: str) -> str:
         "Before ending a task, inspect leftover modified/untracked files (`git status --porcelain`). "
         "If leftovers are part of the same request, finish them with tests. "
         f"If they are unrelated, create one concrete follow-up task with `{cmd} tasks add`. "
+        "The controller will re-run the required tests and dogfood evaluation before accepting completion, "
+        "so do not treat a clean process exit as success by itself. "
         "Also brainstorm one small adjacent improvement in the same area; either ship one safe tested follow-up now "
         "or queue it."
     )
@@ -91,6 +93,7 @@ def build_agent_mission(agent_name: str, task_id: int | None = None) -> str:
             f"`{cmd} tasks claim {task_id} {agent_name}`. "
             f"Implement the task in the main workspace, run the relevant tests, and finish with "
             f"`{cmd} tasks complete {task_id}` after verification passes. "
+            "The self-improve controller will rerun the required tests and dogfood evaluation before accepting completion. "
             f"{autonomy} "
             "Use `python tools/git_ops.py <TASK_ID> commit` before pushing if you need the managed git flow."
         )
@@ -102,7 +105,9 @@ def build_agent_mission(agent_name: str, task_id: int | None = None) -> str:
         "Single-Agent Mode: Resume any task already assigned to you before claiming new work. "
         f"Use `{cmd} tasks list` to inspect the queue, claim one task with "
         f"`{cmd} tasks claim <id> {agent_name}`, run the relevant tests, and complete it with "
-        f"`{cmd} tasks complete <id>` after verification passes. {autonomy} "
+        f"`{cmd} tasks complete <id>` after verification passes. "
+        "The self-improve controller will rerun the required tests and dogfood evaluation before accepting completion. "
+        f"{autonomy} "
         "Stay in the main workspace."
     )
     if worktree_summary:
